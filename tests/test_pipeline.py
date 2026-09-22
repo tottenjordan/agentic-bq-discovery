@@ -25,6 +25,10 @@ os.environ.setdefault("BQ_CONTEXT_IMAGE", "us-central1-docker.pkg.dev/p/r/runner
 # Same reason: components.py resolves the secret's name at import time, and the
 # `spec` fixture is module-scoped, so a function-scoped monkeypatch is too late.
 os.environ.setdefault("SECRET_ID", "test-secret-name")
+# Same again: `@dsl.pipeline` runs the pipeline body at decoration time, so the
+# forwarded config is fixed when `dag` is imported.
+os.environ.setdefault("RESOURCE_PREFIX", "bigquery_context")
+os.environ.setdefault("TOP_K", "5")
 
 from pathlib import Path
 from typing import Any
@@ -167,6 +171,30 @@ def test_no_other_task_carries_it(spec: dict[str, Any]) -> None:
         if name != "exec-finalize"
     }
     assert not [n for n, env in others.items() if "SECRET_ID" in env]
+
+
+def test_the_experiment_configuration_reaches_every_task(spec: dict[str, Any]) -> None:
+    """Whatever the submitter set must appear on all six executors.
+
+    Not just the shards: `ensure-infra` and `preflight` resolve the corpus from
+    RESOURCE_PREFIX, and a run that provisions one corpus and measures another is
+    the failure this closes.
+    """
+    assert components.CONFIG_ENV, "fixture env should have set at least one key"
+    for name in spec["deploymentSpec"]["executors"]:
+        env = _env(spec, name)
+        for key, value in components.CONFIG_ENV.items():
+            assert env.get(key) == value, f"{name} is missing {key}"
+
+
+def test_no_derived_location_is_forwarded_into_the_spec(spec: dict[str, Any]) -> None:
+    """The image pins GOOGLE_CLOUD_LOCATION=global because these models 404 in
+    us-central1. A task-level value would override the image's, so a developer
+    .env saying us-central1 must never reach the spec."""
+    for name in spec["deploymentSpec"]["executors"]:
+        env = _env(spec, name)
+        assert "GOOGLE_CLOUD_LOCATION" not in env
+        assert "GOOGLE_GENAI_USE_VERTEXAI" not in env
 
 
 def test_the_compiled_spec_never_contains_the_key_itself(spec: dict[str, Any]) -> None:

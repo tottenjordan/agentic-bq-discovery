@@ -61,6 +61,24 @@ DEFAULT_APPROACHES = [
 ]
 
 
+def _apply_config_env(task: dsl.PipelineTask) -> dsl.PipelineTask:
+    """Forward the submitter's experiment configuration onto one task.
+
+    Every task, not only the ones that obviously need it: `validate-config`
+    reports the models it checked, `ensure-infra` and `preflight` resolve the
+    corpus from RESOURCE_PREFIX, and the shards read all six. A per-task subset
+    would be a second place to keep in step with `config.py` for no benefit —
+    these are small strings.
+
+    A plain loop rather than `set_env_variable(**CONFIG_ENV)`: the method takes
+    one name and one value, and rejects a PipelineChannel, so the values must be
+    compile-time constants. See components.CONFIG_ENV_KEYS.
+    """
+    for name, value in components.CONFIG_ENV.items():
+        task.set_env_variable(name, value)
+    return task
+
+
 @dsl.pipeline(
     name=PIPELINE_NAME,
     description="Six BigQuery table-discovery approaches across four catalog enrichment tiers.",
@@ -87,6 +105,7 @@ def bq_context_pipeline(
     derive it from a timestamp inside the pipeline.
     """
     validate = components.validate_config(project=project, out=out, expect_identity=service_account)
+    _apply_config_env(validate)
     validate.set_display_name("validate config")
     validate.set_retry(num_retries=0)
     # Identity, IAM grants and model availability all change outside this
@@ -100,12 +119,14 @@ def bq_context_pipeline(
     # ensure_infra is idempotent and honours skip_infra itself, so the only cost
     # of always running it is one VM start.
     infra = components.ensure_infra(project=project, out=out, skip=skip_infra)
+    _apply_config_env(infra)
     infra.set_display_name("ensure infra")
     infra.set_retry(num_retries=1, backoff_duration="60s")
     infra.after(validate)
     infra.set_caching_options(enable_caching=False)
 
     check = components.preflight(project=project, tier=3, baseline=0)
+    _apply_config_env(check)
     check.set_display_name("preflight: enrichment is real")
     check.set_retry(num_retries=0)
     check.after(infra)
@@ -114,6 +135,7 @@ def bq_context_pipeline(
     check.set_caching_options(enable_caching=False)
 
     plan = components.plan_shards(tiers=tiers, approaches=approaches)
+    _apply_config_env(plan)
     plan.set_display_name("plan shards")
     # Cacheable, and the only task here that is: a pure function of its inputs
     # with no external state behind it.
@@ -131,6 +153,7 @@ def bq_context_pipeline(
         question_limit=question_limit,
         refresh_figures=refresh_figures,
     )
+    _apply_config_env(finalize)
     finalize.set_display_name("merge, score, verify")
     finalize.set_caching_options(enable_caching=False)
     # Only this task reads it: `finalize` shells out to `bq-context figures`, and
@@ -160,6 +183,7 @@ def bq_context_pipeline(
                 corpus_fingerprint=check.outputs["fingerprint"],
                 question_limit=question_limit,
             )
+            _apply_config_env(cell)
             cell.set_display_name("run shard")
             # Retries are only worth enabling because shards resume: a retry
             # picks up from the JSONL rather than redoing 90 minutes of work.

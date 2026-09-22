@@ -29,13 +29,17 @@ survives ``uv sync --no-dev`` in the image.
 # "Artifacts must have both a schema_title and a schema_version ... Got: str".
 
 import os
+from collections.abc import Mapping
 from typing import NamedTuple
 
 from kfp import dsl
 
 __all__ = [
+    "CONFIG_ENV",
+    "CONFIG_ENV_KEYS",
     "FIGURES_EXTRA",
     "RUNNER_IMAGE",
+    "SECRET_ID",
     "ensure_infra",
     "finalize",
     "plan_shards",
@@ -70,6 +74,56 @@ RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
 #: compiled spec and the PipelineJob resource, both readable by anyone with
 #: viewer access.
 SECRET_ID = os.environ.get("SECRET_ID", "")
+
+#: Variables that decide *what the experiment measures*, forwarded from the
+#: submitting shell onto every task.
+#:
+#: They were previously not forwarded at all, and `ExperimentConfig.from_env`
+#: gives every one of them a default, so the pipeline silently ran on those
+#: defaults however `.env` was set. Two things went wrong with that.
+#:
+#: Local and pipeline runs could measure different things. They agree today only
+#: because each `.env` value happens to equal the code default — not a property
+#: anyone maintains. This project has already had `.env` carrying
+#: `RESOURCE_PREFIX=bq_context` while the pipeline used `bigquery_context`, which
+#: points provisioning and measurement at two different corpora.
+#:
+#: Worse, the shard cache could not see the difference. Shards key on
+#: `code_version` and `corpus_fingerprint`; changing `AGENT_MODEL` changes
+#: neither, so resubmitting at the same commit returned cells scored with the
+#: previous model. Forwarding them puts the values in the executor's container
+#: spec, which is part of what Vertex hashes.
+#:
+#: `GOOGLE_CLOUD_PROJECT` is absent because every component body already sets it
+#: from the `project` pipeline parameter. `GOOGLE_CLOUD_LOCATION` and
+#: `GOOGLE_GENAI_USE_VERTEXAI` are absent because they are *derived* — outputs of
+#: `configure_adk_env`, pinned in the image. Forwarding a developer `.env` value
+#: of `us-central1` would move every Gemini call to an endpoint where these
+#: models 404. A test pins both exclusions.
+CONFIG_ENV_KEYS = (
+    "AGENT_MODEL",
+    "BQ_LOCATION",
+    "DATAPLEX_LOCATION",
+    "RESOURCE_PREFIX",
+    "TOOL_MODEL",
+    "TOP_K",
+)
+
+
+def config_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """The subset of CONFIG_ENV_KEYS the caller actually set.
+
+    Unset keys are omitted rather than defaulted, so the compiled spec says
+    "nobody chose this" instead of restating a default that then has to be kept
+    in step with `config.py`. Blank values are treated as unset: forwarding `""`
+    would override the container's default with nothing, and read as deliberate.
+    """
+    return {k: environ[k].strip() for k in CONFIG_ENV_KEYS if environ.get(k, "").strip()}
+
+
+#: Resolved at import, because `@dsl.pipeline` runs the pipeline body at
+#: decoration time — by the time `compile_pipeline` is called it is far too late.
+CONFIG_ENV = config_env(os.environ)
 
 #: Installed at runtime by `finalize`, and only when figures are requested.
 #:

@@ -94,7 +94,7 @@ def bq_context_pipeline(
     # after the provisioning and would race it into "dataset does not exist".
     # ensure_infra is idempotent and honours skip_infra itself, so the only cost
     # of always running it is one VM start.
-    infra = components.ensure_infra(project=project, skip=skip_infra)
+    infra = components.ensure_infra(project=project, out=out, skip=skip_infra)
     infra.set_display_name("ensure infra")
     infra.set_retry(num_retries=1, backoff_duration="60s")
     infra.after(validate)

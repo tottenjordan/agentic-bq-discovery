@@ -45,7 +45,7 @@ COMPONENT_ARGS: dict[str, dict[str, Any]] = {
         "out": "gs://b/e",
         "expect_identity": "sa@p.iam.gserviceaccount.com",
     },
-    "ensure_infra": {"project": "p"},
+    "ensure_infra": {"project": "p", "out": "gs://b/e"},
     "preflight": {"project": "p", "tier": 3, "baseline": 0},
     "run_shard": {
         "project": "p",

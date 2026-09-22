@@ -7,6 +7,7 @@ Duration **19m22s**, exit 0. Re-verify before relying on any figure here.
 
 | resource | count | location |
 |---|---|---|
+| GCS results bucket | 1 | `us-central1` (regional) |
 | BigQuery datasets `bigquery_context_tier0..3` | 4 | `US` |
 | Views over `bigquery-public-data` | 60 (15 × 4) | `US` |
 | Dataplex profile scans | 45 (tiers 1–3) | `us-central1` |
@@ -15,9 +16,31 @@ Duration **19m22s**, exit 0. Re-verify before relying on any figure here.
 | Definition entry links in `@bigquery` | 48 | `us` |
 | `overview` aspects on tier-3 tables | 4 | — |
 
+The bucket was **not** created by this run — it was made by hand during
+preflight, and `ensure-infra` only started creating it later (see below).
+
 Rough phase timings from the log: datasets + 60 views ≈ 2 min; 45 scan
 creations at the hardcoded 5s throttle ≈ 7 min; scan polling ≈ 8 min; glossary,
 terms, and links ≈ 2 min.
+
+## The bucket is a local bootstrap step
+
+`ensure-infra` now creates the results bucket first, regional in
+`config.locations.gcs` (`us-central1`, matching pipeline compute) with uniform
+bucket-level access. Idempotent: an existing bucket reports `exists`, and losing
+a creation race to another operator is treated as success.
+
+It lives in `corpus/bucket.py` rather than `corpus/setup.py` because that module
+is vendored near-verbatim from upstream and kept re-syncable; upstream has no
+bucket, since its harness writes locally.
+
+**This can only ever be a local step.** A pipeline run cannot reach the code
+without the bucket already existing — `pipeline_root` is inside it — and the
+pipeline service account holds `roles/storage.objectAdmin` scoped to that
+bucket, which does not include `storage.buckets.create`. In the pipeline the
+call is therefore always a no-op existence check. If it ever 403s, the error
+says so explicitly, because the tempting fix is to widen the SA to
+`roles/storage.admin` and that is wrong.
 
 ## The tier ladder
 

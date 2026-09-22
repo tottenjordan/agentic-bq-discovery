@@ -66,8 +66,15 @@ RUN uv sync --frozen --no-dev \
 # run that does not, so both paths set them deliberately.
 # GOOGLE_CLOUD_LOCATION is the *model endpoint*: gemini-3.x flash models return
 # 404 in us-central1 and 200 at global.
+#
+# GOOGLE_CLOUD_PROJECT is deliberately NOT set. It used to name the project this
+# was developed against, which would silently become the default for anyone else
+# running the image. Every component that needs it exports it from the `project`
+# pipeline parameter first, and `plan-shards` — the one component that does not —
+# never resolves a config, so nothing depends on an image-level default. Unset,
+# a bare `docker run` fails with ExperimentConfig's own message naming the
+# variable, which is the right outcome.
 ENV PATH="/app/.venv/bin:$PATH" \
     BQ_CONTEXT_LOG_FORMAT=json \
     GOOGLE_GENAI_USE_VERTEXAI=true \
-    GOOGLE_CLOUD_PROJECT=hybrid-vertex \
     GOOGLE_CLOUD_LOCATION=global

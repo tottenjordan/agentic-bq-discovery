@@ -159,6 +159,10 @@ def _env(spec: dict[str, Any], executor: str) -> dict[str, str]:
 
 
 def test_finalize_carries_the_secret_name_in_its_environment(spec: dict[str, Any]) -> None:
+    # Non-empty first. Both sides are "" when SECRET_ID is unset at import, and
+    # this assertion then compares nothing — which is what it did in CI until
+    # conftest started pinning the value at import time.
+    assert components.SECRET_ID, "unset at import; the comparison below would be vacuous"
     assert _env(spec, "exec-finalize").get("SECRET_ID") == components.SECRET_ID
 
 

@@ -13,6 +13,8 @@ stripped.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 #: Deterministic stand-ins. Nothing here is reachable; any test that actually
@@ -25,7 +27,27 @@ _FAKE_ENV = {
     "TOOL_MODEL": "gemini-3.5-flash-lite",
     "RESOURCE_PREFIX": "bigquery_context",
     "TOP_K": "5",
+    "SECRET_ID": "test-secret-name",
+    "BQ_CONTEXT_IMAGE": "us-central1-docker.pkg.dev/p/r/runner:testsha",
 }
+
+# Applied here, at *import* time, as well as by the fixture below — because a
+# fixture is too late for anything resolved when a module is first imported.
+# `components.py` computes RUNNER_IMAGE, SECRET_ID and CONFIG_ENV at import, and
+# `@dsl.pipeline` runs the pipeline body at decoration time; both happen while
+# pytest is importing test modules, before any fixture has run.
+#
+# The symptom of getting this wrong is not a failure, it is a *vacuous pass*.
+# `test_finalize_carries_the_secret_name_in_its_environment` compares the
+# compiled spec against `components.SECRET_ID`; with the variable unset both
+# sides are `""` and the test asserts nothing. It did exactly that in CI, because
+# `test_pipeline_cli_seam.py` imports components before `test_pipeline.py` sets
+# anything, while passing locally on a shell that happened to export the values.
+#
+# Assignment, not `setdefault`: an exported RESOURCE_PREFIX in a developer's
+# shell must not reach the suite. That leak has now hidden two real failures in
+# this project, so the hermetic value wins outright.
+os.environ.update(_FAKE_ENV)
 
 
 @pytest.fixture(autouse=True)

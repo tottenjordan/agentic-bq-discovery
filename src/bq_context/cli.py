@@ -247,6 +247,30 @@ def _credentials(impersonate: str) -> Credentials | None:
     )
 
 
+#: What GCE-family credentials report instead of an email address.
+_METADATA_ALIAS = "default"
+
+_METADATA_EMAIL_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
+)
+
+
+def _is_vm_identity(credentials: object) -> bool:
+    """Whether these credentials are the VM's own service account."""
+    from google.auth import compute_engine  # noqa: PLC0415
+
+    return isinstance(credentials, compute_engine.Credentials)
+
+
+def _metadata_service_account() -> str:
+    """The VM's service account email, from the metadata server."""
+    import urllib.request  # noqa: PLC0415
+
+    req = urllib.request.Request(_METADATA_EMAIL_URL, headers={"Metadata-Flavor": "Google"})
+    with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+        return resp.read().decode().strip()
+
+
 def _effective_identity(credentials: Credentials | None) -> str:
     """Best-effort principal for the credentials in use.
 
@@ -260,12 +284,27 @@ def _effective_identity(credentials: Credentials | None) -> str:
     creds = credentials
     if creds is None:
         creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+
     email = getattr(creds, "service_account_email", "") or ""
-    if not email:
+    if email in ("", _METADATA_ALIAS):
         with contextlib.suppress(Exception):
             creds.refresh(google.auth.transport.requests.Request())  # type: ignore[union-attr]
             email = getattr(creds, "service_account_email", "") or ""
-    return email
+
+    # On a GCE-family VM — which is what a Vertex pipeline task is — the
+    # credentials object reports the literal alias "default" rather than an
+    # address, and it stays "default" after a refresh. Because that is truthy,
+    # treating it as an identity made --expect-identity reject a pipeline Vertex
+    # had configured correctly. The metadata server has the real answer.
+    #
+    # Gated on the credentials actually being the VM's: under a *user* ADC the
+    # metadata server still answers, but with the VM's service account, which is
+    # not who the calls are made as. Reporting it would be a confident lie.
+    if email in ("", _METADATA_ALIAS) and _is_vm_identity(creds):
+        with contextlib.suppress(Exception):
+            email = _metadata_service_account()
+
+    return "" if email == _METADATA_ALIAS else email
 
 
 def _check_permissions(project: str, credentials: Credentials | None) -> list[str]:

@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
-from bq_context.cli import REQUIRED_PERMISSIONS, _credentials, app, assess_ladder
+from bq_context.cli import (
+    REQUIRED_PERMISSIONS,
+    _credentials,
+    _effective_identity,
+    app,
+    assess_ladder,
+)
 from bq_context.runner.cells import APPROACHES
 from bq_context.runner.models import Cell, ShardSpec
 from bq_context.runner.resume import shard_prefix
@@ -467,3 +473,37 @@ def test_impersonate_is_offered_on_both_gates() -> None:
 
 def test_no_impersonation_means_no_credentials_object() -> None:
     assert _credentials("") is None
+
+
+def test_metadata_alias_is_not_mistaken_for_an_identity() -> None:
+    """Second pipeline failure: a correct run was rejected by its own gate.
+
+    GCE-family credentials report service_account_email as the literal string
+    "default", and it stays "default" after a refresh. Because that is truthy,
+    --expect-identity compared "default" against the real SA and failed a
+    pipeline that Vertex had in fact configured correctly.
+    """
+
+    class FakeGceCreds:
+        service_account_email = "default"
+
+    assert _effective_identity(FakeGceCreds()) == ""  # type: ignore[arg-type]
+
+
+def test_a_real_service_account_email_passes_through() -> None:
+    class FakeSaCreds:
+        service_account_email = "svc@p.iam.gserviceaccount.com"
+
+    assert _effective_identity(FakeSaCreds()) == "svc@p.iam.gserviceaccount.com"  # type: ignore[arg-type]
+
+
+def test_user_credentials_resolve_to_nothing_rather_than_the_vm_sa() -> None:
+    """The metadata server answers under user ADC too, with the VM's account.
+
+    Reporting it would be a confident lie: the calls are made as the user.
+    """
+
+    class FakeUserCreds:
+        pass
+
+    assert _effective_identity(FakeUserCreds()) == ""  # type: ignore[arg-type]

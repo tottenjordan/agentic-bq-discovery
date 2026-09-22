@@ -1,0 +1,63 @@
+# The checks that currently only run because someone remembers to run them.
+#
+# Scope is deliberately narrow: everything here works with **no GCP
+# credentials**. This repo is public, so there are no service-account keys to
+# leak, and anything needing real BigQuery / Dataplex / Vertex access stays a
+# local or pipeline concern. The test suite is hermetic by design — see
+# tests/conftest.py — and that property is worth protecting, so CI is also the
+# thing that proves it stays true.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes the previous run on the same ref. Never cancel main:
+# its runs are what a commit's status badge reflects.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: lint, types, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          # Must be 0.11.x: pyproject pins uv_build>=0.11.28 as the build
+          # backend, so an older uv cannot build this project at all.
+          version: "0.11.28"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # Reads .python-version. uv fetches the interpreter, so the runner's
+      # system Python is irrelevant and prod matches dev.
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Types
+        run: uv run ty check src/
+
+      # No credentials are configured on this runner, which is the point: if a
+      # test starts needing GCP, it fails here rather than silently passing on
+      # a developer machine that happens to be authenticated.
+      - name: Tests
+        run: uv run pytest -q
+

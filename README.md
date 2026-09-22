@@ -1,10 +1,10 @@
 # agentic-bq-discovery
 
+[![CI](https://github.com/tottenjordan/agentic-bq-discovery/actions/workflows/ci.yml/badge.svg)](https://github.com/tottenjordan/agentic-bq-discovery/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB.svg?logo=python&logoColor=white)](.python-version)
 [![uv](https://img.shields.io/badge/packaging-uv-DE5FE9.svg)](https://github.com/astral-sh/uv)
 [![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64.svg?logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
-[![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen.svg)](tests/)
 [![Vertex AI](https://img.shields.io/badge/orchestration-Vertex%20AI%20Pipelines-4285F4.svg?logo=googlecloud&logoColor=white)](src/bq_context/pipeline/)
 
 > **Which tables should an AI agent read before it writes SQL?**
@@ -231,7 +231,10 @@ uv run pytest -k resume                # resume semantics only
 | `test_cli.py` | CLI surface, IAM preflight, enrichment-ladder gate |
 | `test_merge.py` | Merge across shards, including dead ones |
 
-The whole suite runs offline — no GCP credentials required.
+The whole suite runs offline — no GCP credentials required. `tests/conftest.py`
+pins a fake environment for every test, so a suite that passes locally cannot
+quietly depend on your authenticated shell. CI runs with no credentials
+configured, which keeps that honest.
 
 ## 🤝 Contributing & License
 

@@ -1,0 +1,29 @@
+bq-context
+==========
+
+This project vendors and modifies code from:
+
+    statmike/vertex-ai-mlops
+    https://github.com/statmike/vertex-ai-mlops
+    Path: Applied ML/AI Agents/bigquery-context
+    Copyright Google LLC
+    Licensed under the Apache License, Version 2.0
+
+A copy of the Apache License, Version 2.0 is available at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Vendored components, all under src/bq_context/, retain their original license
+headers and are modified from the originals:
+
+    config.py                 scope/tier handling refactored to remove module globals
+    schemas.py                unchanged contract; result/shard models added alongside
+    discovery_common.py       shared helpers now take an explicit TierContext
+    context_cache/            cache is per-TierContext rather than a module global
+    reranker/                 token accounting moved to a contextvars.ContextVar
+    approaches/agent_*/       the six discovery approaches, repackaged
+    corpus/                   upstream scripts/setup.py and scripts/cleanup.py
+    ../experiments/           upstream examples/questions.json and GROUND_TRUTH.md
+
+The benchmark harness, sharding, resume, retry, scoring pipeline, container,
+and Vertex AI Pipelines orchestration in this repository are original work.

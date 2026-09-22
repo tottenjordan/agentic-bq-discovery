@@ -46,6 +46,9 @@ notes.
 
 ### Tooling
 
+- [Pipeline runs — milestone 1 exit](pipeline-runs.md) — the two ways to get identity wrong in a
+  pipeline (a task cannot impersonate itself; `"default"` is an alias, not an identity), and the
+  green cold + resumed pilot runs.
 - [The Vertex AI Pipeline](kfp-pipeline.md) — the topology, and three KFP constraints that cost
   real time: PEP 563 breaks compilation, `parallelism` must be a compile-time constant, and a
   `dsl.If` group cannot be depended on from outside.

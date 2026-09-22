@@ -191,6 +191,11 @@ def execute_shard(
     """
     import asyncio  # noqa: PLC0415 - local to keep the module import light
 
+    # Must happen before any agent is constructed: ADK reads these to build its
+    # own genai client, and without them an LLM-driven approach fails with
+    # "No API key was provided".
+    config.configure_adk_env()
+
     warm_start = time.monotonic()
     if needs_cache(spec.approach):
         # Scope must exist before listing tables, hence the throwaway context.

@@ -37,6 +37,10 @@ notes.
   how long it took, and the finding that **tier 2 is not a distinct factor level**: glossary entry
   links are created correctly but never reach the capsule the agents read.
 
+- [First live runs](local-smoke-results.md) — measured per-cell cost vs upstream, cache warm at
+  ~4s (settling the sharding question), verified resume after a hard kill, and the ADK
+  environment bug that only a live agent run could surface.
+
 ### Tooling
 
 - [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline

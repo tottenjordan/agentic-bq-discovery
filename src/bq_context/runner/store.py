@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from google.auth.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +86,17 @@ class LocalStore:
 class GcsStore:
     """Cloud Storage-backed store."""
 
-    def __init__(self, bucket: str, prefix: str = "") -> None:
+    def __init__(
+        self, bucket: str, prefix: str = "", credentials: Credentials | None = None
+    ) -> None:
         # Imported here so LocalStore users never pay the ~0.4s
         # google-cloud-storage import, and tests need no GCP creds.
         from google.cloud import storage  # noqa: PLC0415
 
-        self._client = storage.Client()
+        # Credentials must be threaded through: without this, a --impersonate
+        # check would build a client from ambient ADC and report the caller's
+        # access as though it were the service account's.
+        self._client = storage.Client(credentials=credentials)
         self._bucket = self._client.bucket(bucket)
         self.bucket_name = bucket
         self.prefix = prefix.strip("/")
@@ -122,10 +130,10 @@ class GcsStore:
         return f"gs://{self.bucket_name}/{self._blob_name(path)}"
 
 
-def store_for(location: str) -> ArtifactStore:
+def store_for(location: str, credentials: Credentials | None = None) -> ArtifactStore:
     """Build a store from a ``gs://bucket/prefix`` URI or a local path."""
     if location.startswith("gs://"):
         without_scheme = location[len("gs://") :]
         bucket, _, prefix = without_scheme.partition("/")
-        return GcsStore(bucket=bucket, prefix=prefix)
+        return GcsStore(bucket=bucket, prefix=prefix, credentials=credentials)
     return LocalStore(location)

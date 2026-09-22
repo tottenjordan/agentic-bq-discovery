@@ -33,6 +33,8 @@ from bq_context.runner.models import ShardSpec
 from bq_context.runner.store import store_for
 
 if TYPE_CHECKING:
+    from google.auth.credentials import Credentials
+
     from bq_context.context_cache import TableCache
 
 app = typer.Typer(
@@ -190,6 +192,72 @@ def assess_ladder(ladder: list[dict[str, Any]], *, empty: bool) -> tuple[list[st
     return problems, warnings
 
 
+#: The permissions this experiment actually exercises, grouped by what needs
+#: them. Checked up front so a missing grant costs 30 seconds rather than
+#: surfacing 40 minutes into ensure-infra, or — worse — as an empty
+#: lookupContext response that looks like a genuine null result.
+REQUIRED_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "create the tier datasets and views": (
+        "bigquery.datasets.create",
+        "bigquery.datasets.get",
+        "bigquery.tables.create",
+        "bigquery.tables.get",
+        "bigquery.tables.list",
+        "bigquery.tables.update",
+    ),
+    "run queries and profile scans": (
+        "bigquery.jobs.create",
+        "dataplex.datascans.create",
+        "dataplex.datascans.run",
+    ),
+    "write catalog enrichment": (
+        "dataplex.entries.update",
+        "dataplex.entryLinks.create",
+        "dataplex.glossaries.create",
+    ),
+    "read catalog context": (
+        "dataplex.entries.get",
+        "dataplex.entryGroups.get",
+    ),
+    "call Gemini": ("aiplatform.endpoints.predict",),
+    "resolve the project": ("resourcemanager.projects.get",),
+}
+
+
+def _credentials(impersonate: str) -> Credentials | None:
+    """ADC, or impersonated credentials for ``impersonate``.
+
+    Checking permissions as yourself proves nothing: a developer ADC account is
+    typically near-Owner, so everything passes locally and the pipeline fails on
+    a fresh principal. Impersonation is the only way to ask the question that
+    matters.
+    """
+    if not impersonate:
+        return None
+    import google.auth  # noqa: PLC0415
+    from google.auth import impersonated_credentials  # noqa: PLC0415
+
+    source, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    return impersonated_credentials.Credentials(
+        source_credentials=source,
+        target_principal=impersonate,
+        target_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+
+def _check_permissions(project: str, credentials: Credentials | None) -> list[str]:
+    """Return the required permissions the caller is missing."""
+    from google.cloud import resourcemanager_v3  # noqa: PLC0415
+
+    client = resourcemanager_v3.ProjectsClient(credentials=credentials)
+    wanted = sorted({p for group in REQUIRED_PERMISSIONS.values() for p in group})
+    # testIamPermissions caps at 100 per call; we are well under.
+    granted = set(
+        client.test_iam_permissions(resource=f"projects/{project}", permissions=wanted).permissions
+    )
+    return [p for p in wanted if p not in granted]
+
+
 def _selected(approaches: list[str] | None, tiers: list[int] | None) -> tuple[list[str], list[int]]:
     chosen = approaches or list(APPROACHES)
     unknown = [a for a in chosen if a not in APPROACHES]
@@ -213,14 +281,30 @@ def version() -> None:
 
 
 @app.command("validate-config")
-def validate_config(out: OutOpt = DEFAULT_OUT) -> None:
-    """Fail fast on identity, model, and storage problems.
+def validate_config(
+    out: OutOpt = DEFAULT_OUT,
+    impersonate: Annotated[
+        str,
+        typer.Option(
+            "--impersonate",
+            help="Service account to check as. Use this to test the pipeline SA "
+            "rather than your own near-Owner ADC identity.",
+        ),
+    ] = "",
+) -> None:
+    """Fail fast on identity, permission, model, and storage problems.
 
     Thirty seconds here saves discovering a missing grant forty minutes into
     ensure-infra, which is the single most common way this pipeline wastes time.
+
+    Run it with ``--impersonate`` before every pipeline submission. Checking as
+    yourself proves nothing: a developer ADC account is typically near-Owner, so
+    everything passes locally and the pipeline fails on a fresh principal.
     """
     config = _config()
     loc = config.locations
+    credentials = _credentials(impersonate)
+    typer.echo(f"identity           {impersonate or 'ADC (your own credentials)'}")
     typer.echo(f"project            {config.project}")
     typer.echo(f"agent model        {config.agent_model}")
     typer.echo(f"tool model         {config.tool_model}")
@@ -244,10 +328,33 @@ def validate_config(out: OutOpt = DEFAULT_OUT) -> None:
             "only at 'global' (verified: 404 in us-central1)."
         )
 
+    try:
+        missing = _check_permissions(config.project, credentials)
+        if missing:
+            by_purpose = [
+                f"{purpose}: {', '.join(p for p in perms if p in missing)}"
+                for purpose, perms in REQUIRED_PERMISSIONS.items()
+                if any(p in missing for p in perms)
+            ]
+            problems.append(
+                "missing project permissions — "
+                + "; ".join(by_purpose)
+                + ". Note dataplex.entries.get in particular: without it "
+                "lookupContext returns an EMPTY response rather than 403, so "
+                "every tier scores identically and the run looks like a "
+                "genuine null result."
+            )
+        else:
+            typer.echo(
+                f"permissions        all {sum(map(len, REQUIRED_PERMISSIONS.values()))} present"
+            )
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"Could not check permissions: {type(exc).__name__}: {exc}")
+
     from google.cloud import bigquery  # noqa: PLC0415
 
     try:
-        bigquery.Client(project=config.project).query(
+        bigquery.Client(project=config.project, credentials=credentials).query(
             "SELECT 1", job_config=bigquery.QueryJobConfig(dry_run=True)
         )
         typer.echo("bigquery           reachable")
@@ -255,7 +362,7 @@ def validate_config(out: OutOpt = DEFAULT_OUT) -> None:
         problems.append(f"BigQuery unreachable: {type(exc).__name__}: {exc}")
 
     try:
-        store = store_for(out)
+        store = store_for(out, credentials)
         store.write_text("_validate_config", "ok\n")
         typer.echo(f"storage            writable ({store.uri('')})")
     except Exception as exc:  # noqa: BLE001
@@ -330,7 +437,14 @@ def cleanup(
 
 
 @app.command()
-def preflight(tier: TierOpt = 3, baseline: BaselineOpt = 0) -> None:
+def preflight(
+    tier: TierOpt = 3,
+    baseline: BaselineOpt = 0,
+    impersonate: Annotated[
+        str,
+        typer.Option("--impersonate", help="Check as this service account instead of ADC."),
+    ] = "",
+) -> None:
     """Assert catalog enrichment is real before any measurement runs.
 
     This is the most important gate in the system. ``lookupContext`` returns an
@@ -340,6 +454,12 @@ def preflight(tier: TierOpt = 3, baseline: BaselineOpt = 0) -> None:
     null finding. Never skip it.
     """
     config = _config()
+    # Running this as the pipeline SA is the point. lookupContext returns an
+    # empty response rather than 403 on missing permissions, so a developer ADC
+    # account reads context fine while the SA silently reads nothing.
+    credentials = _credentials(impersonate)
+    typer.echo(f"identity: {impersonate or 'ADC (your own credentials)'}")
+
     from google.api_core.exceptions import NotFound  # noqa: PLC0415
 
     from bq_context.context_cache import TableCache  # noqa: PLC0415
@@ -357,7 +477,9 @@ def preflight(tier: TierOpt = 3, baseline: BaselineOpt = 0) -> None:
             datasets = get_datasets()
             try:
                 scoped = {ds: get_scoped_tables(ds) for ds in datasets}
-                caches[check_tier] = TableCache.build(config, datasets, scoped)
+                caches[check_tier] = TableCache.build(
+                    config, datasets, scoped, credentials=credentials
+                )
             except NotFound:
                 # The usual cause is simply that ensure-infra has not run. Say
                 # so, rather than surfacing a BigQuery stack trace for what is

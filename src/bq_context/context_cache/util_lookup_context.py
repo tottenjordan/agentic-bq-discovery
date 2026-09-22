@@ -41,8 +41,16 @@ _client: dataplex_v1.CatalogServiceClient | None = None
 _PROFILE_FIELDS = ("nullRatio", "distinctValues", "sampleValues")
 
 
-def _get_client() -> dataplex_v1.CatalogServiceClient:
+def _get_client(credentials=None) -> dataplex_v1.CatalogServiceClient:
+    """Cached client, unless explicit credentials are supplied.
+
+    An impersonated client is never cached: preflight uses one to check what the
+    pipeline service account can see, and caching it would leak that identity
+    into every later call in the process.
+    """
     global _client
+    if credentials is not None:
+        return dataplex_v1.CatalogServiceClient(credentials=credentials)
     if _client is None:
         _client = dataplex_v1.CatalogServiceClient()
     return _client
@@ -98,6 +106,7 @@ def lookup_context(
     config: ExperimentConfig,
     entry_names: list[str],
     format: str = "JSON",
+    credentials=None,
 ) -> str:
     """Call the Knowledge Catalog lookupContext API for a batch of entries.
 
@@ -115,7 +124,7 @@ def lookup_context(
         cache and reranker see the capsule shape they expect. Non-JSON formats
         are returned verbatim.
     """
-    client = _get_client()
+    client = _get_client(credentials)
 
     request = dataplex_v1.LookupContextRequest(
         name=(f"projects/{config.project}/locations/{config.locations.catalog}"),
@@ -145,6 +154,7 @@ def lookup_context_batched(
     entry_names: list[str],
     batch_size: int = 10,
     format: str = "JSON",
+    credentials=None,
 ) -> str:
     """Call lookupContext in batches (API limit is 10 entries per call).
 
@@ -162,7 +172,7 @@ def lookup_context_batched(
 
     for i in range(0, len(entry_names), batch_size):
         batch = entry_names[i : i + batch_size]
-        context = lookup_context(config, batch, format=format)
+        context = lookup_context(config, batch, format=format, credentials=credentials)
         if context:
             all_context.append(context)
 

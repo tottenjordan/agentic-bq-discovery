@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
-from bq_context.cli import app, assess_ladder
+from bq_context.cli import REQUIRED_PERMISSIONS, _credentials, app, assess_ladder
 from bq_context.runner.cells import APPROACHES
 from bq_context.runner.models import Cell, ShardSpec
 from bq_context.runner.resume import shard_prefix
@@ -423,3 +423,47 @@ def test_a_rung_gaining_a_new_aspect_is_not_flat() -> None:
         [rung(2, 118_000), rung(3, 118_500, aspects=["overview"])], empty=False
     )
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# IAM preflight
+# ---------------------------------------------------------------------------
+def test_required_permissions_cover_every_api_the_experiment_uses() -> None:
+    """A missing entry here is a grant nobody discovers until it fails live."""
+    flat = {p for group in REQUIRED_PERMISSIONS.values() for p in group}
+
+    # The four services the experiment actually calls.
+    assert any(p.startswith("bigquery.") for p in flat)
+    assert any(p.startswith("dataplex.") for p in flat)
+    assert any(p.startswith("aiplatform.") for p in flat)
+    assert "resourcemanager.projects.get" in flat
+
+
+def test_dataplex_entries_get_is_checked() -> None:
+    """The single most important permission in the list.
+
+    Without it lookupContext returns an EMPTY response rather than 403, so every
+    tier scores identically, the pipeline goes green, and the run is
+    indistinguishable from a genuine null result.
+    """
+    flat = {p for group in REQUIRED_PERMISSIONS.values() for p in group}
+    assert "dataplex.entries.get" in flat
+
+
+def test_permissions_are_grouped_by_purpose_not_by_service() -> None:
+    """Groups become the failure message, so they must read as actions."""
+    for purpose in REQUIRED_PERMISSIONS:
+        assert " " in purpose, f"{purpose!r} should describe an action"
+    assert all(REQUIRED_PERMISSIONS.values()), "no empty groups"
+
+
+def test_impersonate_is_offered_on_both_gates() -> None:
+    """Checking as yourself proves nothing; both gates must support the SA."""
+    for command in ("validate-config", "preflight"):
+        result = runner.invoke(app, [command, "--help"])
+        assert result.exit_code == 0
+        assert "--impersonate" in result.stdout, command
+
+
+def test_no_impersonation_means_no_credentials_object() -> None:
+    assert _credentials("") is None

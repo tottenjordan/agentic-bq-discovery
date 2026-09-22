@@ -11,6 +11,15 @@ Across 3,000 cells (6 approaches × 4 tiers × 25 questions × 5 runs), **enrich
 was completely flat: +0% for every approach.** Medians saturate at 100% recall on the 15-table
 corpus.
 
+Two things we have since established about that number, both of which weaken it further:
+
+1. **It is computed with a median**, on a metric that saturates at 1.0 — so it is structurally
+   unable to move. The same cells aggregated by mean *do* move (see `tier_response(aggregate=)`).
+2. **At least one tier is not a real factor level.** On our own provisioning run, glossary
+   enrichment never reached the context capsule, making tier 2 byte-equivalent to tier 1 — see
+   [[corpus-provisioning]]. If the same happened upstream, their tier-2 arm contributed nothing
+   by construction.
+
 That is a ceiling effect, not a finding about catalog enrichment. The corpus is too easy to
 discriminate between strategies. Two implications:
 

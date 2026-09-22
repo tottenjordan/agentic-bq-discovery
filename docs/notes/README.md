@@ -58,6 +58,11 @@ notes.
 - [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline
   YAML (with the drift incident that proves it), and measured uv-in-Docker cold-start fixes.
 
+## How to run it
+
+- [`experiments/README.md`](../../experiments/README.md) — prerequisites, the local and pipeline
+  workflows, resume semantics, and reading the report.
+
 ## Plans
 
 - [Milestone 1: reference architecture and first iteration](../plans/2026-09-22-bq-context-milestone-1.md)

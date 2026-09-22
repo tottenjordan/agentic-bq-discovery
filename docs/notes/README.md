@@ -17,9 +17,28 @@ notes.
 
 ## Notes
 
-_No notes yet._
+### The experiment
 
-<!--
-Add entries as:
-- [Topic title](path/to/note.md) — one-line hook for what the note answers.
--->
+- [Upstream experiment: findings and implications](upstream-experiment.md) — their headline
+  result is a **null result** (flat tier response, ceiling effect); the per-approach cost table
+  that drives our sharding; the three globals; upstream's known defects.
+
+### GCP environment
+
+- [`hybrid-vertex` project state](gcp/hybrid-vertex-environment.md) — what's enabled, the 254
+  existing datasets, resources we created, and `gcloud ai pipeline-jobs` not being a thing.
+- [Gemini endpoints and quota](gcp/gemini-endpoints-and-quota.md) — our two models are
+  **`global`-endpoint only** (404 in `us-central1`), they're on Dynamic Shared Quota so there is
+  no headroom to check, and how to probe availability correctly.
+- [Dataplex / Knowledge Catalog gotchas](gcp/dataplex-catalog-gotchas.md) — `lookupContext`
+  returns **empty rather than 403** on missing permissions; parentheses silently break search
+  scoping; the three different locations catalog resources must live in; quotas.
+
+### Tooling
+
+- [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline
+  YAML (with the drift incident that proves it), and measured uv-in-Docker cold-start fixes.
+
+## Plans
+
+- [Milestone 1: reference architecture and first iteration](../plans/2026-09-22-bq-context-milestone-1.md)

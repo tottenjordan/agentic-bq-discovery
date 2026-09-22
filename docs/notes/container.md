@@ -78,6 +78,56 @@ A `:cache` tag is pushed alongside for `--cache-from` on subsequent builds.
 Current: `:1baa86f`, digest
 `sha256:76ac686c3b70af1bc1251f8dafc42c63fdd91f91d13f8b92195247873dd7caf8`.
 
+## The pipeline builds its own image
+
+Added 2026-09-22. `ensure_image` is the first task: it checks Artifact Registry
+for `runner:{sha}` and, only if absent, submits a Cloud Build from a source
+tarball the CLI uploaded. On the common path — resubmitting at a commit whose
+image is already pushed — it costs one registry lookup.
+
+**Why not `set_container_image`.** That *does* take a runtime value, so each task
+could be handed an image produced by an earlier step, and it compiles:
+
+```
+exec-work  image={{$.inputs.parameters['pipelinechannel--build-image-Output']}}
+```
+
+But an `ExitHandler` exit task cannot depend on anything, so `finalize` could
+never receive it — and `finalize` is where merging and scoring happen. It would
+refresh five tasks and leave the sixth stale.
+
+Pinning every task to `runner:{sha}` at compile time and making that tag exist
+first covers all six with one `.after()`. The insight is that **a container image
+reference only has to resolve when the task starts, not when the spec is
+compiled**, so compiling against a tag that does not exist yet is fine.
+
+A `@dsl.container_component`, not a Python one: a Python component on a stock
+image would have to `pip install kfp` before the pipeline could build anything.
+
+**The source is `git archive HEAD`, never the working directory.** The tag is the
+HEAD SHA, so uploading the directory would let uncommitted edits into an image
+whose tag says otherwise — the cache lie the SHA tag exists to prevent. It also
+means untracked files, `.env` among them, cannot be swept in. `submit-pipeline`
+refuses a dirty tree for the same reason `make image` always has.
+
+### Grants this needed
+
+| identity | grant | why |
+|---|---|---|
+| `bq-context-pipeline@` | `projects/hybrid-vertex/roles/bqContextBuildSubmitter` | custom: `cloudbuild.builds.create/get/list` only |
+| `934903580331@cloudbuild` | `storage.objectViewer` on the results bucket | read the uploaded source tarball |
+| `934903580331-compute@` | same | the modern default build identity |
+
+The custom role is deliberate. `roles/cloudbuild.builds.editor` would also permit
+cancelling and updating any build in the project, and this SA only ever needs to
+submit one and watch it.
+
+**Worth being honest about the cost:** the pipeline can now build and push images
+into the registry it later pulls from. That is a supply-chain surface that did not
+exist when builds were a human running `make image` from a clean tree. The
+clean-tree check and `git archive` keep the tag honest, but the privilege is real
+and was accepted deliberately to make unattended, scheduled runs possible.
+
 ## Where each environment variable actually comes from
 
 Audited end to end on 2026-09-22, because the answer was not what the code

@@ -77,7 +77,11 @@ def test_no_pep563_in_modules_kfp_introspects() -> None:
 # ---------------------------------------------------------------------------
 def test_execution_order(spec: dict[str, Any]) -> None:
     tasks = _tasks(spec)
-    assert tasks["validate-config"].get("dependentTasks") is None
+    # ensure-image is the new root: every task below is pinned to RUNNER_IMAGE
+    # at compile time, and this is what makes that tag exist before anything
+    # pulls it.
+    assert tasks["validate-config"]["dependentTasks"] == ["ensure-image"]
+    assert tasks["ensure-image"].get("dependentTasks") is None
     assert tasks["ensure-infra"]["dependentTasks"] == ["validate-config"]
     assert tasks["plan-shards"]["dependentTasks"] == ["preflight"]
 
@@ -177,7 +181,10 @@ def test_the_experiment_configuration_reaches_every_task(spec: dict[str, Any]) -
     the failure this closes.
     """
     assert components.CONFIG_ENV, "fixture env should have set at least one key"
-    for name in spec["deploymentSpec"]["executors"]:
+    # ensure-image is excluded on purpose: it runs a shell script on a stock
+    # Google image and never constructs an ExperimentConfig, so forwarding the
+    # experiment's configuration to it would be noise in the spec.
+    for name in set(spec["deploymentSpec"]["executors"]) - {"exec-ensure-image"}:
         env = _env(spec, name)
         for key, value in components.CONFIG_ENV.items():
             assert env.get(key) == value, f"{name} is missing {key}"
@@ -218,7 +225,12 @@ def test_every_component_pins_the_same_immutable_image(spec: dict[str, Any]) -> 
     at runtime when figures are requested. `set_container_image` remains available
     if that trade ever changes; see docs/notes/kfp-pipeline.md.
     """
-    images = {c["container"]["image"] for c in spec["deploymentSpec"]["executors"].values()}
+    executors = spec["deploymentSpec"]["executors"]
+    # The builder is the one task that cannot use the runner image, because its
+    # job is to make the runner image exist. Everything else must still be the
+    # single SHA-pinned runner.
+    assert executors["exec-ensure-image"]["container"]["image"] == components.BUILDER_IMAGE
+    images = {c["container"]["image"] for k, c in executors.items() if k != "exec-ensure-image"}
     assert len(images) == 1
     image = images.pop()
     assert not image.endswith(":latest"), "a floating tag makes the KFP cache lie"
@@ -336,6 +348,10 @@ CACHING = {
     "plan-shards": (True, "a pure function of its inputs"),
     "run-shard": (True, "safe only because code_version AND corpus_fingerprint are inputs"),
     "finalize": (False, "must run on every attempt, including failed ones"),
+    "ensure-image": (
+        False,
+        "Cloud Build state is external, and spotting a missing image is the job",
+    ),
 }
 
 
@@ -404,6 +420,11 @@ def test_every_component_body_resolves_in_the_namespace_kfp_gives_it(
 
     executors = spec["deploymentSpec"]["executors"]
     for name, executor in executors.items():
+        if name == "exec-ensure-image":
+            # A container component: KFP embeds no Python source for it, so
+            # there is no extracted `def` whose namespace could be wrong. That
+            # is also why it needs no `pip install kfp` before it can run.
+            continue
         source = executor["container"]["command"][-1]
         # Exactly what KFP's generated preamble provides, by name.
         namespace: dict[str, Any] = {"kfp": kfp, "dsl": kfp_dsl}

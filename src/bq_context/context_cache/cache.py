@@ -86,6 +86,21 @@ def _build_brief(entry: dict) -> dict:
     return brief
 
 
+def is_empty_payload(payload: str) -> bool:
+    """True when a cache payload carries no table entries.
+
+    ``all_briefs``, ``all_detailed`` and ``detailed_for`` always return a JSON
+    *array* string, so an empty result is ``"[]"`` — which is **truthy**.
+    Guarding a callback with ``if not payload:`` therefore never fires.
+
+    Not hypothetical: `semantic_context` used that guard and, across full-01,
+    sent 45 empty payloads to the reranker instead of recording an empty
+    result — 210,905 tokens, and an inconsistency with `kc_search`, which
+    skipped correctly and so looked cheaper for reasons unrelated to its design.
+    """
+    return not payload or payload.strip() in {"", "[]"}
+
+
 @dataclass(slots=True)
 class TableCache:
     """Table metadata for the tables in one tier's scope."""

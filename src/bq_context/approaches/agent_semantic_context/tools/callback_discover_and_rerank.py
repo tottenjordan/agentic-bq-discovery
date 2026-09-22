@@ -19,6 +19,7 @@ from bq_context.discovery_common import (
     search_entries_scoped,
     store_empty,
 )
+from bq_context.context_cache import is_empty_payload
 from bq_context.runtime import current_tier
 
 LABEL = "Approach 5: Semantic Context"
@@ -44,10 +45,10 @@ async def discover_and_rerank(callback_context: CallbackContext):
 
     detailed, matched_ids, search_stats = await asyncio.to_thread(_search_and_get_cached, question)
 
-    callback_context.state["nominated_tables_semantic_context"] = matched_ids
-    callback_context.state["search_stats_semantic_context"] = search_stats
+    callback_context.state[f"nominated_tables_{METHOD}"] = matched_ids
+    callback_context.state[f"search_stats_{METHOD}"] = search_stats
 
-    if not detailed:
+    if is_empty_payload(detailed):
         store_empty(
             callback_context,
             METHOD,

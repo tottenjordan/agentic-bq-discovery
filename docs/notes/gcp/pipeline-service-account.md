@@ -95,4 +95,55 @@ failure names the action that would break rather than a bare permission string:
 
 `dataplex.entries.get` is the one that matters most, for the reason above.
 
-Related: [[dataplex-catalog-gotchas]], [[hybrid-vertex-environment]].
+## The 17th permission is checked somewhere else, deliberately
+
+`secretmanager.versions.access` — on the secret holding the Gemini Developer API
+key that PaperBanana needs — is **not** in that table, and a test enforces its
+absence. Two live behaviours are the reason, both verified against the API on
+2026-09-22.
+
+**A resource-level binding is invisible to a project-level check.** The table
+above is resolved with one `testIamPermissions` against `projects/hybrid-vertex`,
+which only sees policy attached at the project. `roles/secretmanager.secretAccessor`
+is bound directly on `bq-context-secret` here, so listing the permission in that
+table would report a grant as missing while it is working — and the obvious fix
+for that false alarm is to bind the role across the whole project. The check has
+to name the secret resource:
+
+```python
+client.test_iam_permissions(
+    request={
+        "resource": f"projects/{project}/secrets/{secret}",
+        "permissions": ["secretmanager.versions.access"],
+    }
+)
+```
+
+**A secret that does not exist returns an empty permission list, not `NotFound`
+— the same answer as one you may not read.** This is the `lookupContext` trap in
+a new costume (see [[dataplex-catalog-gotchas]]): the API answers "nothing" where
+it could answer "denied". Measured:
+
+| secret | `test_iam_permissions` | `get_secret` |
+|---|---|---|
+| `bq-context-secret` | `['secretmanager.versions.access']` | exists |
+| `definitely-not-a-real-secret` | `[]` | `NotFound` |
+
+So an empty list alone cannot pick a remedy, and the two remedies are opposite —
+create the secret, versus bind a role on one that already exists. `validate-config`
+probes with `get_secret` before advising. That probe needs `secretmanager.secrets.get`,
+which a least-privilege principal may lack, so anything other than `NotFound` is
+treated as "exists": guessing "absent" would tell someone to create a secret they
+already have.
+
+**Why the check exists at all.** `figures.api_key` deliberately swallows a denied
+or absent secret and returns `None`, because `finalize` is the exit task and may
+only turn a run red for missing cells. Without a gate at submit time, a missing
+grant is a green pipeline with no diagrams, ninety minutes in, and nothing in the
+logs naming IAM.
+
+An unset `SECRET_ID` is reported but is **not** a failure — figures are opt-in
+and off by default, so requiring a secret would fail the runs that never wanted
+one. `validate-config --require-secret` makes it fatal, for the figures path.
+
+Related: [[dataplex-catalog-gotchas]], [[hybrid-vertex-environment]], [[kfp-pipeline]].

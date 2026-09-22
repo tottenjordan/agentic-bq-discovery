@@ -419,6 +419,125 @@ def _check_permissions(project: str, credentials: Credentials | None) -> list[st
     return [p for p in wanted if p not in granted]
 
 
+#: Tested against the secret itself, never against the project — see
+#: `_check_secret_access`. Deliberately absent from REQUIRED_PERMISSIONS, and a
+#: test asserts it stays absent.
+SECRET_PERMISSION = "secretmanager.versions.access"  # noqa: S105 - an IAM permission, not a secret
+
+
+def _check_secret_access(project: str, secret: str, credentials: Credentials | None) -> str | None:
+    """Return why the API-key secret is unusable, or None if it is fine.
+
+    Why this is not just another entry in ``REQUIRED_PERMISSIONS``: that table is
+    checked with one ``testIamPermissions`` against ``projects/{id}``, which sees
+    only policy bound at the *project*. ``roles/secretmanager.secretAccessor`` is
+    normally bound on the individual secret — it is, on this project's
+    ``bq-context-secret`` — and a resource-level binding is invisible to a
+    project-level query. Listing the permission there would report a missing
+    grant that is present, and the natural "fix" for that false alarm is to
+    over-grant across the whole project.
+
+    Permission is tested rather than the value fetched. ``testIamPermissions``
+    answers the question without pulling a live API key into this process and
+    into whatever is capturing its output.
+
+    This reports rather than raises so the caller can collect it alongside the
+    other problems and print them together.
+    """
+    from google.cloud import secretmanager  # noqa: PLC0415
+
+    resource = f"projects/{project}/secrets/{secret}"
+    try:
+        client = secretmanager.SecretManagerServiceClient(credentials=credentials)
+        granted = set(
+            client.test_iam_permissions(
+                request={"resource": resource, "permissions": [SECRET_PERMISSION]}
+            ).permissions
+        )
+    except Exception as exc:  # noqa: BLE001 - a check that cannot run must say so, not pass
+        return f"Could not check access to secret {secret!r}: {type(exc).__name__}: {exc}"
+
+    if SECRET_PERMISSION in granted:
+        return None
+
+    # A secret that does not exist returns an empty permission list rather than
+    # raising NotFound — verified against the live API, where a typo'd name and a
+    # real missing grant are indistinguishable here. The remedies are opposite
+    # (create it, versus bind a role on one that exists), so probe before
+    # advising. Same shape as the `lookupContext` trap in CLAUDE.md: the API
+    # answers "nothing" where it could have answered "denied".
+    if not _secret_exists(client, resource):
+        return (
+            f"secret {secret!r} does not exist in {project}. Create it with "
+            f"`gcloud secrets create {secret} --project={project} --replication-policy=automatic` "
+            "and add a version holding a Gemini Developer API key, or unset "
+            "SECRET_ID to run without figures."
+        )
+    return (
+        f"missing {SECRET_PERMISSION} on secret {secret!r}. Figure generation "
+        "would be skipped silently, ninety minutes into the exit task, with "
+        "nothing in the logs naming IAM. Grant it with `gcloud secrets "
+        f"add-iam-policy-binding {secret} --project={project} "
+        "--member=serviceAccount:<pipeline-sa> "
+        "--role=roles/secretmanager.secretAccessor`."
+    )
+
+
+def _secret_exists(client: Any, resource: str) -> bool:
+    """Whether the secret is there, used only to pick the right remedy.
+
+    Defaults to True on any error other than NotFound. ``get_secret`` needs
+    ``secretmanager.secrets.get``, which a least-privilege principal may not
+    hold; a PermissionDenied there says nothing about existence, and guessing
+    "absent" would tell someone to create a secret they already have.
+    """
+    from google.api_core import exceptions  # noqa: PLC0415
+
+    try:
+        client.get_secret(request={"name": resource})
+    except exceptions.NotFound:
+        return False
+    except Exception:  # noqa: BLE001 - cannot tell; the grant message is the safer default
+        return True
+    return True
+
+
+def _report_secret(project: str, credentials: Credentials | None, *, require: bool) -> list[str]:
+    """Echo the API-key secret's status; return any problem as a one-item list.
+
+    A list rather than ``str | None`` so the caller can ``+=`` it without a branch
+    — ``validate_config`` is one branch under the complexity limit already.
+
+    Split out of ``validate_config`` rather than inlined: three branches pushed
+    that function past the branch and statement limits, and the reporting rule
+    here is worth stating in one place.
+
+    An unset ``SECRET_ID`` is normal, not broken. Figures are opt-in and off by
+    default, so demanding a secret from every run would fail the 99% of runs that
+    never wanted one. ``require=True`` is for the figures path, where absence is
+    fatal rather than merely unconfigured.
+    """
+    import os  # noqa: PLC0415
+
+    secret = os.getenv("SECRET_ID", "").strip()
+    if secret:
+        problem = _check_secret_access(project, secret, credentials)
+        if problem:
+            return [problem]
+        typer.echo(f"secret             {secret} readable")
+        return []
+    if require:
+        return [
+            (
+                "SECRET_ID is unset, and --require-secret was passed. It names the "
+                "Secret Manager secret holding a Gemini Developer API key; set it in "
+                ".env locally, or on the task environment in the pipeline."
+            )
+        ]
+    typer.echo("secret             not configured (SECRET_ID unset; figures skipped)")
+    return []
+
+
 def _selected(approaches: list[str] | None, tiers: list[int] | None) -> tuple[list[str], list[int]]:
     chosen = approaches or list(APPROACHES)
     unknown = [a for a in chosen if a not in APPROACHES]
@@ -460,6 +579,15 @@ def validate_config(
             "pipeline, where impersonating yourself is a 403.",
         ),
     ] = "",
+    require_secret: Annotated[
+        bool,
+        typer.Option(
+            "--require-secret",
+            help="Treat an unset SECRET_ID as a failure. Use it when the run will "
+            "generate figures, where a missing key is fatal rather than merely "
+            "unconfigured.",
+        ),
+    ] = False,
 ) -> None:
     """Fail fast on identity, permission, model, and storage problems.
 
@@ -527,6 +655,8 @@ def validate_config(
             )
     except Exception as exc:  # noqa: BLE001
         problems.append(f"Could not check permissions: {type(exc).__name__}: {exc}")
+
+    problems += _report_secret(config.project, credentials, require=require_secret)
 
     from google.cloud import bigquery  # noqa: PLC0415
 

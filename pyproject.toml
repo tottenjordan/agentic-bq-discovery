@@ -82,6 +82,11 @@ ignore = [
 ]
 "src/bq_context/scoring/upstream_build_results.py" = ["ALL"]
 
+# Typer builds its CLI from the signature, so a command with eight options is
+# a function with eight parameters and boolean flags have literal defaults.
+# These are framework shape, not complexity worth refactoring away.
+"src/bq_context/cli.py" = ["FBT001", "FBT002", "PLR0913", "PLR0917"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

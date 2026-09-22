@@ -1,0 +1,109 @@
+[project]
+name = "bq-context"
+version = "0.1.0"
+description = "Evaluation harness for six BigQuery table-discovery approaches"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "google-adk>=1.36,<2",
+    "google-cloud-aiplatform>=1.158,<2",
+    "google-cloud-bigquery>=3.45.2",
+    "google-cloud-dataplex>=2.20.0",
+    "google-cloud-resource-manager>=1.18.0",
+    "google-cloud-storage>=3.14.1",
+    "google-genai>=2.24.0",
+    "kfp==2.17.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+bq-context = "bq_context.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
+    "ty>=0.0.83",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Unmodified upstream reference material, kept verbatim for provenance and for
+# porting the metrics. Never imported by this package, so linting it would only
+# create pressure to edit files whose value is that they match upstream exactly.
+extend-exclude = ["docs/upstream"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",       # docstring style: we require docstrings by convention, not by linter
+    "COM812",  # trailing comma: conflicts with the formatter
+    "ISC001",  # implicit string concat: conflicts with the formatter
+    "ANN401",  # Any is legitimate at the ADK/genai boundary
+    "S101",    # assert: used deliberately in tests and preflight gates
+    "TD",      # TODO formatting
+    "FIX",     # allow TODO comments to exist
+    "CPY001",  # per-file copyright headers: attribution lives in NOTICE, and
+               # Apache-2.0 requires preserving upstream headers, not adding new ones
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Magic values and private access are normal in tests; pytest discovers test
+# files without __init__.py (INP001); and the module-globals regression guard
+# imports inside the test body on purpose (PLC0415).
+"tests/*" = ["PLR2004", "SLF001", "INP001", "PLC0415"]
+
+# Vendored from statmike/vertex-ai-mlops (see NOTICE). Kept close to upstream so
+# the diff stays reviewable and we can re-sync; it is script-style code, not
+# library code. This list is exactly the rules upstream trips today — it is a
+# debt ledger, and it should only ever shrink. Two entries are load-bearing:
+#   PLW0603 (global statement) marks the three module globals Task 3 removes.
+#   T201    (print) goes away when the vendored scripts move to structured logging.
+"src/bq_context/schemas.py" = ["ALL"]
+"src/bq_context/discovery_common.py" = ["ALL"]
+"src/bq_context/{context_cache,reranker,approaches,corpus}/**/*.py" = [
+    "A002", "ANN001", "ANN201", "ANN202", "ARG001", "BLE001", "C901", "DTZ011",
+    "E501", "EM101", "EM102", "ERA001", "F401", "FBT001", "FBT003", "FURB110",
+    "G201", "I001", "ICN001", "INP001", "ISC004", "N806", "PERF401", "PLC0415",
+    "PLR0912", "PLR0913", "PLR0915", "PLR0917", "PLR1711", "PLR2004", "PLW0603",
+    "PTH123", "RET501", "RUF001", "RUF002", "RUF003", "RUF005", "S110", "S112",
+    "S324", "S608", "SLF001", "T201", "TRY003", "TRY300",
+]
+"src/bq_context/scoring/upstream_build_results.py" = ["ALL"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+# Vendored upstream (see NOTICE) is not yet type-clean. The 6 current diagnostics
+# are inference artifacts, not runtime bugs: upstream's GLOSSARY_TERMS mixes str
+# and dict values, so `.get("columns", {})` widens to `str | dict[...]` and ty
+# rejects `.items()`. A TypedDict fixes it properly. Task 3 refactors these
+# modules and should delete the corresponding entries here.
+exclude = [
+    "src/bq_context/approaches/",
+    "src/bq_context/corpus/",
+    "src/bq_context/scoring/upstream_build_results.py",
+]
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

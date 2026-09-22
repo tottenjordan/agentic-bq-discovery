@@ -1,0 +1,61 @@
+"""Shared reranker tool used by five of the six discovery agents.
+
+Takes candidate table metadata (as a string) from any discovery approach and
+produces a ranked RerankerResponse via Gemini structured output. (Approach 6,
+Search Direct, skips the reranker and uses semantic search's own ranking.)
+"""
+
+import asyncio
+
+from google.adk import tools
+
+from bq_context.config import TOP_K
+
+from .util_rerank import call_reranker
+
+
+async def rerank_tables(
+    question: str,
+    candidate_metadata: str,
+    discovery_method: str,
+    table_ids: list[str],
+    tool_context: tools.ToolContext,
+) -> str:
+    """Rank candidate BigQuery tables by relevance to the user's question.
+
+    Call this tool after gathering table metadata to produce a ranked list.
+    Pass all discovered table metadata as a single string in candidate_metadata.
+
+    Args:
+        question: The user's original question about their data.
+        candidate_metadata: All table metadata gathered during discovery,
+            formatted as a readable string (schemas, descriptions, etc.).
+        discovery_method: Which discovery approach produced the candidates.
+            One of: "bq_tools", "kc_search", "kc_context",
+            "context_prefilter", "semantic_context".
+        table_ids: List of fully qualified table IDs (project.dataset.table)
+            for all candidate tables included in candidate_metadata.
+
+    Returns:
+        A JSON string containing the ranked tables with confidence scores,
+        reasoning, column hints, and SQL suggestions.
+    """
+    top_k = tool_context.state.get("top_k", TOP_K)
+
+    # Store nominations in state for the orchestrator to compare
+    tool_context.state[f"nominated_tables_{discovery_method}"] = table_ids
+
+    # Run in thread pool so parallel agents don't block the event loop
+    result = await asyncio.to_thread(
+        call_reranker,
+        question=question,
+        candidate_metadata=candidate_metadata,
+        discovery_method=discovery_method,
+        top_k=top_k,
+    )
+
+    # Store reranker result in state for the orchestrator to compare
+    state_key = f"reranker_result_{discovery_method}"
+    tool_context.state[state_key] = result.model_dump_json()
+
+    return result.model_dump_json(indent=2)

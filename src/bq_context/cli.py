@@ -126,32 +126,40 @@ def _code_version() -> str:
     return out.stdout.strip() or "unknown"
 
 
-#: Below this, a tier's extra bytes are timestamps and ids rather than content.
-_FLAT_RUNG_BYTES = 4096
+#: Top-level capsule keys that indicate a table-level enrichment aspect.
+_ASPECT_KEYS = ("guidelines", "overview", "business_descriptions")
+
+#: Per-column capsule keys. Glossary definitions arrive here, as ``terms``, on
+#: the individual column — NOT as a top-level ``related_terms`` object. Looking
+#: only at top-level keys is what made an earlier version of this gate report a
+#: fully-enriched tier 2 as dead.
+_COLUMN_ENRICHMENT_KEYS = ("terms", "dataProfile")
 
 
 def _tier_profile(tier: int, cache: TableCache) -> dict[str, Any]:
     """Summarise what enrichment actually reached one tier's capsules.
 
-    Byte count alone is not enough to tell tiers apart: metadata timestamps and
-    entry ids differ between datasets, so two functionally identical tiers can
-    still differ by a kilobyte or two. The aspect keys and the profiled-table
-    count are what actually distinguish them.
+    Counts enrichment *features*, not bytes. Byte deltas are a trap in both
+    directions: dataset timestamps and entry ids differ between tiers even when
+    nothing else does, and — the failure that actually happened — real glossary
+    enrichment across 15 tables amounted to only ~1.6 KB and was dismissed as
+    noise by a byte threshold.
     """
     aspects: set[str] = set()
-    profiled = 0
+    counts = dict.fromkeys(_COLUMN_ENRICHMENT_KEYS, 0)
     for entry in cache.entries.values():
         capsule = json.loads(entry.detailed)
-        if any("dataProfile" in column for column in capsule.get("schema", [])):
-            profiled += 1
-        for key in ("guidelines", "overview", "related_terms", "business_descriptions"):
-            if key in capsule:
-                aspects.add(key)
+        for column in capsule.get("schema", []):
+            for key in _COLUMN_ENRICHMENT_KEYS:
+                if column.get(key):
+                    counts[key] += 1
+        aspects.update(key for key in _ASPECT_KEYS if key in capsule)
     return {
         "tier": tier,
         "tables": len(cache.entries),
         "bytes": len(cache.all_detailed()),
-        "profiled": profiled,
+        "profiled": counts["dataProfile"],
+        "terms": counts["terms"],
         "aspects": sorted(aspects),
     }
 
@@ -182,16 +190,20 @@ def assess_ladder(ladder: list[dict[str, Any]], *, empty: bool) -> tuple[list[st
         )
 
     for lower, upper in itertools.pairwise(ladder):
-        gained = upper["bytes"] - lower["bytes"]
-        same_shape = upper["aspects"] == lower["aspects"] and upper["profiled"] == lower["profiled"]
-        if same_shape and gained < _FLAT_RUNG_BYTES:
+        if _signature(upper) == _signature(lower):
             warnings.append(
-                f"tier {upper['tier']} adds nothing over tier {lower['tier']} "
-                f"(+{gained:,} bytes, identical aspects). That tier is not a "
-                "distinct factor level; treat its results as a duplicate of "
-                f"tier {lower['tier']}."
+                f"tier {upper['tier']} adds no enrichment over tier "
+                f"{lower['tier']} (same aspects, {upper['profiled']} profiled "
+                f"columns, {upper['terms']} glossary-annotated columns). That "
+                "tier is not a distinct factor level; treat its results as a "
+                f"duplicate of tier {lower['tier']}."
             )
     return problems, warnings
+
+
+def _signature(rung: dict[str, Any]) -> tuple[Any, ...]:
+    """What makes a tier distinct. Deliberately excludes byte count."""
+    return (tuple(rung["aspects"]), rung["profiled"], rung["terms"])
 
 
 #: The permissions this experiment actually exercises, grouped by what needs
@@ -575,11 +587,11 @@ def preflight(
                 raise typer.Exit(1) from None
 
     ladder = [_tier_profile(t, caches[t]) for t in sorted(caches)]
-    typer.echo(f"{'tier':<6}{'tables':>7}{'bytes':>10}{'profiled':>10}  aspects")
+    typer.echo(f"{'tier':<6}{'tables':>7}{'bytes':>10}{'profiled':>10}{'terms':>7}  aspects")
     for rung in ladder:
         typer.echo(
             f"{rung['tier']:<6}{rung['tables']:>7}{rung['bytes']:>10,}"
-            f"{rung['profiled']:>10}  {','.join(rung['aspects']) or '—'}"
+            f"{rung['profiled']:>10}{rung['terms']:>7}  {','.join(rung['aspects']) or '—'}"
         )
 
     problems, warnings = assess_ladder(ladder, empty=len(caches[tier]) == 0)

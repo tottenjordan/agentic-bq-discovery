@@ -53,6 +53,12 @@ Milestone 1, in progress. Done: vendored approaches refactored for parallel
 execution, shard runner with cell-level resume, retry/circuit-breaker. Next: the
 CLI, corpus provisioning, container, and the Vertex AI Pipeline.
 
+## Running the experiment
+
+See [`experiments/README.md`](experiments/README.md) for prerequisites, the
+local and Vertex AI Pipelines workflows, resume semantics, and how to read the
+report.
+
 ## Quick start
 
 ```bash

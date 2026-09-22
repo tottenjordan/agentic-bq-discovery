@@ -15,10 +15,11 @@ Two things we have since established about that number, both of which weaken it 
 
 1. **It is computed with a median**, on a metric that saturates at 1.0 — so it is structurally
    unable to move. The same cells aggregated by mean *do* move (see `tier_response(aggregate=)`).
-2. **At least one tier is not a real factor level.** On our own provisioning run, glossary
-   enrichment never reached the context capsule, making tier 2 byte-equivalent to tier 1 — see
-   [[corpus-provisioning]]. If the same happened upstream, their tier-2 arm contributed nothing
-   by construction.
+2. **Part of the enrichment may be silently truncated.** The `lookupContext` capsule caps each
+   schema at 25 columns by default, so glossary annotations on wide tables never reach the
+   reranker — 6 of our 24 term links are lost this way. Upstream ran without
+   `all_schema_fields=true`, so their tier 2 and 3 arms were weakened on exactly the wide tables
+   where glossary help matters most. See [[lookup-context-capsule]].
 
 That is a ceiling effect, not a finding about catalog enrichment. The corpus is too easy to
 discriminate between strategies. Two implications:

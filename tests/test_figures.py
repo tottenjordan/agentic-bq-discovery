@@ -12,7 +12,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from bq_context.scoring.figures import DIAGRAMS, STYLE, generate
+import pytest
+
+from bq_context.scoring.figures import (
+    DEFAULT_SECRET_ID,
+    DIAGRAMS,
+    STYLE,
+    api_key,
+    generate,
+    secret_id,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,3 +81,50 @@ def test_a_failing_renderer_loses_only_that_diagram(tmp_path: Path) -> None:
 
 def test_a_renderer_returning_nothing_is_handled(tmp_path: Path) -> None:
     assert generate("p", tmp_path / "out", renderer=lambda _c, _i: None) == []
+
+
+# ---------------------------------------------------------------------------
+# Which secret to read
+# ---------------------------------------------------------------------------
+def test_the_secret_name_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.env` carries SECRET_ID locally; the pipeline gets it from the task env."""
+    monkeypatch.setenv("SECRET_ID", "some-other-secret")
+    assert secret_id() == "some-other-secret"
+
+
+def test_it_falls_back_to_the_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """There is no `.env` in the runner image, so the default has to be usable."""
+    monkeypatch.delenv("SECRET_ID", raising=False)
+    assert secret_id() == DEFAULT_SECRET_ID
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n"])
+def test_a_blank_value_falls_back_rather_than_querying_an_empty_name(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """`SECRET_ID=` in a .env is easy to write and would otherwise build the path
+    `projects/p/secrets//versions/latest`, which fails obscurely."""
+    monkeypatch.setenv("SECRET_ID", value)
+    assert secret_id() == DEFAULT_SECRET_ID
+
+
+def test_it_is_read_at_call_time_not_import_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A module-level constant would freeze whatever was set when the module was
+    first imported — which for the CLI is before `.env` is loaded."""
+    monkeypatch.setenv("SECRET_ID", "first")
+    assert secret_id() == "first"
+    monkeypatch.setenv("SECRET_ID", "second")
+    assert secret_id() == "second"
+
+
+def test_the_failure_message_names_the_secret_it_tried(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Otherwise a missing-secret skip gives no clue which name was wrong — the
+    exact confusion a configurable name introduces."""
+    import logging
+
+    monkeypatch.setenv("SECRET_ID", "definitely-not-there")
+    with caplog.at_level(logging.WARNING):
+        api_key("no-such-project-xyz")
+    assert "definitely-not-there" in caplog.text

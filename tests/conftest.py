@@ -29,6 +29,23 @@ _FAKE_ENV = {
 
 
 @pytest.fixture(autouse=True)
+def no_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop the CLI reading the developer's real `.env`.
+
+    The CLI loads `.env` on startup so `SECRET_ID` and friends work locally. That
+    load uses `override=False`, which protects any variable the fixture below
+    *sets* — but not one a test deliberately *deletes*. `test_missing_project_...`
+    unsets GOOGLE_CLOUD_PROJECT to assert the error message, and a real `.env`
+    filled it straight back in, so the test failed on a machine with a `.env` and
+    passed in CI.
+
+    Neutered here rather than given a skip-flag in `cli.py`: hermeticity is the
+    harness's job, and production code should not know it is under test.
+    """
+    monkeypatch.setattr("bq_context.cli._load_dotenv", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def hermetic_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the environment for every test.
 

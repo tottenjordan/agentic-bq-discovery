@@ -34,8 +34,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Secret Manager secret holding a Gemini Developer API key.
-SECRET_ID = "bq-context-gemini-api-key"  # noqa: S105 - a secret *name*, not a secret
+#: Secret Manager secret holding a Gemini Developer API key, when `SECRET_ID` is
+#: not set. A secret *name*, not a secret.
+DEFAULT_SECRET_ID = "bq-context-secret"  # noqa: S105
+
+
+def secret_id() -> str:
+    """Which Secret Manager secret to read the API key from.
+
+    Read at call time rather than import time so `.env` and the environment can
+    change it without the module having to be reimported — and so tests can set
+    it with `monkeypatch.setenv` rather than reaching into module state.
+
+    Sourced from `SECRET_ID`, which `.env` carries locally and the CLI loads on
+    startup. In the pipeline there is no `.env`; the value comes from the task
+    environment, or falls back to the default.
+    """
+    import os  # noqa: PLC0415
+
+    return os.environ.get("SECRET_ID", "").strip() or DEFAULT_SECRET_ID
+
 
 #: House style, matching the diagrams already in docs/images/.
 STYLE = (
@@ -71,10 +89,14 @@ def api_key(project: str) -> str | None:
         from google.cloud import secretmanager  # noqa: PLC0415
 
         client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project}/secrets/{SECRET_ID}/versions/latest"
+        name = f"projects/{project}/secrets/{secret_id()}/versions/latest"
         return client.access_secret_version(request={"name": name}).payload.data.decode().strip()
     except Exception as exc:  # noqa: BLE001 - absent secret and denied access are both "skip"
-        logger.warning("No Gemini Developer API key (%s): skipping figures", type(exc).__name__)
+        logger.warning(
+            "No Gemini Developer API key in secret %r (%s): skipping figures",
+            secret_id(),
+            type(exc).__name__,
+        )
         return None
 
 

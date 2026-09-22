@@ -17,7 +17,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.cloud import dataplex_v1
 from google.protobuf import json_format
 
-from bq_context.config import BQ_LOCATION, GOOGLE_CLOUD_PROJECT
+from bq_context.runtime import current_tier
 from bq_context.discovery_common import (
     emit,
     get_question,
@@ -40,13 +40,14 @@ def _search_and_lookup(question: str) -> tuple[str, list[str], dict]:
     if not hits:
         return "", [], stats
 
+    config = current_tier().config
     client = dataplex_v1.CatalogServiceClient()
     nominated_ids: list[str] = []
     metadata_parts: list[str] = []
     for hit in hits:
         try:
             lookup_req = dataplex_v1.LookupEntryRequest(
-                name=f"projects/{GOOGLE_CLOUD_PROJECT}/locations/{BQ_LOCATION.lower()}",
+                name=f"projects/{config.project}/locations/{config.locations.catalog}",
                 entry=hit.entry_name,
                 view=dataplex_v1.EntryView.FULL,
             )

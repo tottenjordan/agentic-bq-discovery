@@ -22,7 +22,7 @@ import json
 
 from google.cloud import dataplex_v1
 
-from bq_context.config import BQ_LOCATION, GOOGLE_CLOUD_PROJECT
+from bq_context.config import ExperimentConfig
 
 # lookupContext options is a protobuf map<string,string>, so every value is a
 # string and the format is lowercase (yaml | xml | json; default yaml).
@@ -95,12 +95,14 @@ def _normalize_resource(resource: dict) -> dict:
 
 
 def lookup_context(
+    config: ExperimentConfig,
     entry_names: list[str],
     format: str = "JSON",
 ) -> str:
     """Call the Knowledge Catalog lookupContext API for a batch of entries.
 
     Args:
+        config: Project and location settings.
         entry_names: Catalog entry names (max 10 per call). Format:
             projects/{project}/locations/{location}/entryGroups/@bigquery/
             entries/bigquery.googleapis.com/projects/{project}/datasets/{dataset}/tables/{table}
@@ -116,7 +118,7 @@ def lookup_context(
     client = _get_client()
 
     request = dataplex_v1.LookupContextRequest(
-        name=(f"projects/{GOOGLE_CLOUD_PROJECT}/locations/{BQ_LOCATION.lower()}"),
+        name=(f"projects/{config.project}/locations/{config.locations.catalog}"),
         resources=entry_names,
         options={"format": format.lower()},
     )
@@ -139,6 +141,7 @@ def lookup_context(
 
 
 def lookup_context_batched(
+    config: ExperimentConfig,
     entry_names: list[str],
     batch_size: int = 10,
     format: str = "JSON",
@@ -146,6 +149,7 @@ def lookup_context_batched(
     """Call lookupContext in batches (API limit is 10 entries per call).
 
     Args:
+        config: Project and location settings.
         entry_names: All catalog entry names to look up.
         batch_size: Max entries per API call (default 10, the API max).
         format: Response format — "JSON", "YAML", or "XML".
@@ -158,7 +162,7 @@ def lookup_context_batched(
 
     for i in range(0, len(entry_names), batch_size):
         batch = entry_names[i : i + batch_size]
-        context = lookup_context(batch, format=format)
+        context = lookup_context(config, batch, format=format)
         if context:
             all_context.append(context)
 

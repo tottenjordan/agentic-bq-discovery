@@ -59,7 +59,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004", "SLF001"]  # magic values and private access are fine in tests
+# Magic values and private access are normal in tests; pytest discovers test
+# files without __init__.py (INP001); and the module-globals regression guard
+# imports inside the test body on purpose (PLC0415).
+"tests/*" = ["PLR2004", "SLF001", "INP001", "PLC0415"]
 
 # Vendored from statmike/vertex-ai-mlops (see NOTICE). Kept close to upstream so
 # the diff stays reviewable and we can re-sync; it is script-style code, not
@@ -67,7 +70,8 @@ ignore = [
 # debt ledger, and it should only ever shrink. Two entries are load-bearing:
 #   PLW0603 (global statement) marks the three module globals Task 3 removes.
 #   T201    (print) goes away when the vendored scripts move to structured logging.
-"src/bq_context/{config,schemas,discovery_common}.py" = ["ALL"]
+"src/bq_context/schemas.py" = ["ALL"]
+"src/bq_context/discovery_common.py" = ["ALL"]
 "src/bq_context/{context_cache,reranker,approaches,corpus}/**/*.py" = [
     "A002", "ANN001", "ANN201", "ANN202", "ARG001", "BLE001", "C901", "DTZ011",
     "E501", "EM101", "EM102", "ERA001", "F401", "FBT001", "FBT003", "FURB110",
@@ -92,10 +96,6 @@ python-version = "3.13"
 # rejects `.items()`. A TypedDict fixes it properly. Task 3 refactors these
 # modules and should delete the corresponding entries here.
 exclude = [
-    "src/bq_context/config.py",
-    "src/bq_context/discovery_common.py",
-    "src/bq_context/context_cache/",
-    "src/bq_context/reranker/",
     "src/bq_context/approaches/",
     "src/bq_context/corpus/",
     "src/bq_context/scoring/upstream_build_results.py",

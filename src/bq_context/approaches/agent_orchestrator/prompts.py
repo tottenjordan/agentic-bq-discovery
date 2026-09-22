@@ -2,10 +2,10 @@
 
 import datetime
 
-from bq_context.config import GOOGLE_CLOUD_PROJECT
+from bq_context.runtime import default_config
 
 today_date = datetime.date.today().strftime("%A, %B %d, %Y")
-project_id = GOOGLE_CLOUD_PROJECT
+project_id = default_config().project
 
 global_instructions = f"""\
 You are a BigQuery table discovery comparison agent.

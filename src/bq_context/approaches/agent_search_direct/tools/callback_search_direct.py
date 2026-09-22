@@ -18,7 +18,7 @@ import asyncio
 
 from google.adk.agents.callback_context import CallbackContext
 
-from bq_context.config import TOP_K
+from bq_context.runtime import current_tier
 from bq_context.discovery_common import emit, get_question, search_entries_scoped
 from bq_context.schemas import RankedTable, RerankerResponse
 
@@ -50,7 +50,7 @@ def _response_from_search_order(question: str, ordered_ids: list[str]) -> Rerank
         )
     return RerankerResponse(
         question=question,
-        top_k=TOP_K,
+        top_k=current_tier().config.top_k,
         ranked_tables=ranked,
         notes=(
             "Search-direct: semantic search's own returned order is the final "

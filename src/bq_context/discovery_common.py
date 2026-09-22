@@ -18,8 +18,8 @@ from google.adk.agents.callback_context import CallbackContext
 from google.cloud import dataplex_v1
 from google.genai import types
 
-from bq_context.config import GOOGLE_CLOUD_PROJECT, TOP_K, get_datasets, is_table_in_scope
 from bq_context.reranker.util_rerank import call_reranker, format_reranker_markdown
+from bq_context.runtime import current_tier, get_datasets, is_table_in_scope
 from bq_context.schemas import RerankerResponse
 
 SEARCH_PAGE_SIZE = 20
@@ -67,11 +67,12 @@ def search_entries_scoped(question: str) -> tuple[list[SearchHit], dict]:
         a non-zero value flags a scoping regression. The client-side
         ``is_table_in_scope`` filter stays as harmless defense-in-depth.
     """
+    project = current_tier().config.project
     client = dataplex_v1.CatalogServiceClient()
     ds = get_datasets()[0]
     query = f"{question} system=BIGQUERY parent:datasets/{ds}"
     request = dataplex_v1.SearchEntriesRequest(
-        name=f"projects/{GOOGLE_CLOUD_PROJECT}/locations/global",
+        name=f"projects/{project}/locations/global",
         query=query,
         page_size=SEARCH_PAGE_SIZE,
         semantic_search=True,
@@ -94,7 +95,7 @@ def search_entries_scoped(question: str) -> tuple[list[SearchHit], dict]:
             continue
         hits.append(
             SearchHit(
-                table_id=f"{GOOGLE_CLOUD_PROJECT}.{ds_name}.{tbl_name}",
+                table_id=f"{project}.{ds_name}.{tbl_name}",
                 entry_name=entry.name,
                 fqn=fqn,
                 display_name=source.display_name if source else "",
@@ -121,9 +122,11 @@ async def rerank_and_store(
     Writes the ``reranker_result_{method}`` state key the compare agent reads.
     Approaches differ only in how they build ``candidate_metadata``.
     """
-    top_k = callback_context.state.get("top_k", TOP_K)
+    config = current_tier().config
+    top_k = callback_context.state.get("top_k", config.top_k)
     result = await asyncio.to_thread(
         call_reranker,
+        config=config,
         question=question,
         candidate_metadata=candidate_metadata,
         discovery_method=method,
@@ -137,7 +140,8 @@ def store_empty(
     callback_context: CallbackContext, method: str, question: str, notes: str
 ) -> RerankerResponse:
     """Store an empty RerankerResponse (no candidates) and return it."""
-    result = RerankerResponse(question=question, top_k=TOP_K, ranked_tables=[], notes=notes)
+    top_k = current_tier().config.top_k
+    result = RerankerResponse(question=question, top_k=top_k, ranked_tables=[], notes=notes)
     callback_context.state[f"reranker_result_{method}"] = result.model_dump_json()
     return result
 

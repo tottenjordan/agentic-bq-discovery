@@ -64,7 +64,8 @@ def test_a_failing_renderer_loses_only_that_diagram(tmp_path: Path) -> None:
     over a single transient API error."""
 
     def renderer(_c: str, _i: str) -> Path:
-        raise RuntimeError("429")
+        message = "429 from the image API"
+        raise RuntimeError(message)
 
     assert generate("p", tmp_path / "out", renderer=renderer) == []
 

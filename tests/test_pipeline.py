@@ -17,19 +17,11 @@ imports the modules without compiling.
 
 from __future__ import annotations
 
-import os
-
-# Must precede the pipeline imports: components.py resolves base_image from the
-# environment at import time, deliberately raising KeyError when it is unset.
-os.environ.setdefault("BQ_CONTEXT_IMAGE", "us-central1-docker.pkg.dev/p/r/runner:testsha")
-# Same reason: components.py resolves the secret's name at import time, and the
-# `spec` fixture is module-scoped, so a function-scoped monkeypatch is too late.
-os.environ.setdefault("SECRET_ID", "test-secret-name")
-# Same again: `@dsl.pipeline` runs the pipeline body at decoration time, so the
-# forwarded config is fixed when `dag` is imported.
-os.environ.setdefault("RESOURCE_PREFIX", "bigquery_context")
-os.environ.setdefault("TOP_K", "5")
-
+# BQ_CONTEXT_IMAGE, SECRET_ID and the config variables are pinned by
+# `conftest.py` at *its* import, which precedes every test module. Setting them
+# again here would be redundant, and worse: it would let this module pass in
+# isolation while the ordering bug it guards against still existed under a full
+# run. See the comment beside `_FAKE_ENV`.
 from pathlib import Path
 from typing import Any
 

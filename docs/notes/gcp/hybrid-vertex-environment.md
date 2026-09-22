@@ -2,8 +2,13 @@
 
 *Verified 2026-09-22. Re-check before relying on any specific resource.*
 
-Running from a Cloud Workstation, ADC as `admin@jordantotten.altostrat.com`, near-Owner.
-Default region `us-central1`.
+Running from a Cloud Workstation using Application Default Credentials for an
+admin account. Default region `us-central1`.
+
+> Note when reading this repo publicly: the developer ADC account is broadly
+> privileged, so "it works for me locally" says nothing about whether the
+> pipeline service account has the grants it needs. That asymmetry is exactly
+> what `validate-config` exists to catch.
 
 ## Already enabled — nothing to turn on
 

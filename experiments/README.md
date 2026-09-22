@@ -155,8 +155,8 @@ budget.
   median saturates and hides the tail.
 - **Enrichment response** — Δ recall from the lowest tier to the highest, shown
   as both median and mean. The median is the original measure and saturates;
-  the mean is the one that can actually move. Read alongside the tier-2 caveat
-  above.
+  the mean is the one that can actually move. Read alongside the truncation
+  caveat above — 6 of 24 glossary links do not reach the reranker by default.
 - **Cost and latency** — p50/p95 and reranker tokens per approach.
 - **nDCG@5 by category** — where `search_direct` (no reranker) falls behind, and
   therefore what reranking is buying.

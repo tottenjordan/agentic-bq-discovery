@@ -94,9 +94,28 @@ def seeded(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Surface
 # ---------------------------------------------------------------------------
-def test_help_lists_every_documented_subcommand() -> None:
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
+def registered_commands() -> dict[str, object]:
+    """The CLI's commands, by introspection rather than by scraping --help.
+
+    Rendered help is a presentation concern: it carries ANSI codes, wraps at the
+    terminal width, and can elide long option names. A test that greps it is
+    asserting on formatting, not on the interface — which is how
+    test_impersonate_is_offered_on_both_gates passed locally and failed on a CI
+    runner. Introspection is deterministic everywhere.
+    """
+    import typer.main
+
+    return dict(typer.main.get_command(app).commands)  # type: ignore[attr-defined]
+
+
+def option_names(command: str) -> set[str]:
+    """Every flag declared on a command, e.g. {"--tier", "-t"}."""
+    params = registered_commands()[command].params  # type: ignore[attr-defined]
+    return {opt for p in params for opt in getattr(p, "opts", [])}
+
+
+def test_every_documented_subcommand_is_registered() -> None:
+    commands = registered_commands()
     for command in (
         "validate-config",
         "ensure-infra",
@@ -107,8 +126,10 @@ def test_help_lists_every_documented_subcommand() -> None:
         "plot",
         "plan-shards",
         "cleanup",
+        "compile-pipeline",
+        "submit-pipeline",
     ):
-        assert command in result.stdout, command
+        assert command in commands, command
 
 
 def test_version_is_a_subcommand_not_swallowed_as_an_argument() -> None:
@@ -482,9 +503,12 @@ def test_permissions_are_grouped_by_purpose_not_by_service() -> None:
 def test_impersonate_is_offered_on_both_gates() -> None:
     """Checking as yourself proves nothing; both gates must support the SA."""
     for command in ("validate-config", "preflight"):
-        result = runner.invoke(app, [command, "--help"])
-        assert result.exit_code == 0
-        assert "--impersonate" in result.stdout, command
+        assert "--impersonate" in option_names(command), command
+
+
+def test_validate_config_can_assert_identity_without_impersonating() -> None:
+    """The pipeline path: a task already IS the SA and cannot impersonate itself."""
+    assert "--expect-identity" in option_names("validate-config")
 
 
 def test_no_impersonation_means_no_credentials_object() -> None:

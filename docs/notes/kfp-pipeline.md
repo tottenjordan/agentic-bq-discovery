@@ -215,3 +215,34 @@ config and a registry artifact to keep in step with the runner.
 It would earn its place if the extra were genuinely heavy (a CUDA base, a large
 model), if the environment blocked PyPI egress (VPC-SC), or if per-run pinned
 environments were a requirement. None holds today.
+
+### Do not generalise it: `set_env_variable` is compile-time only
+
+The natural next thought — "if the image can be a runtime value, so can an env
+var" — is wrong, and the two methods look identical from the outside. Both are
+annotated `(name: str, value: str)`; only one accepts a channel.
+
+```python
+@dsl.pipeline
+def p(secret_id: str = "from-param"):
+    t().set_env_variable("SECRET_ID", secret_id)
+```
+
+```
+TypeError: bad argument type for built-in operation
+```
+
+The failure is at **compile** time, from `build_container_spec_for_task`
+(`pipeline_spec_builder.py:751`) handing a `PipelineChannel` to a protobuf
+`EnvVar`. Note that is the same message `ContainerSpec(image=...)` gives, so the
+error does not distinguish "this method never takes a channel" from "you passed
+the wrong kind of thing".
+
+Consequence for us: `SECRET_ID` on `finalize` is resolved from the environment at
+compile time (`components.SECRET_ID`), not threaded as a pipeline parameter. The
+submitting shell's `.env` therefore decides it, and changing it means
+recompiling — which costs nothing here, since the spec is compiled at every
+submission anyway.
+
+Related: [[pipeline-service-account]] for why only the secret's *name* goes in
+the spec and the key itself never does.

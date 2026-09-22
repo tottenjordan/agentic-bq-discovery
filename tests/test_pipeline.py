@@ -22,6 +22,9 @@ import os
 # Must precede the pipeline imports: components.py resolves base_image from the
 # environment at import time, deliberately raising KeyError when it is unset.
 os.environ.setdefault("BQ_CONTEXT_IMAGE", "us-central1-docker.pkg.dev/p/r/runner:testsha")
+# Same reason: components.py resolves the secret's name at import time, and the
+# `spec` fixture is module-scoped, so a function-scoped monkeypatch is too late.
+os.environ.setdefault("SECRET_ID", "test-secret-name")
 
 from pathlib import Path
 from typing import Any
@@ -128,6 +131,55 @@ def test_code_version_reaches_every_shard(spec: dict[str, Any]) -> None:
     """
     inputs = _component(spec, "for-loop")["dag"]["tasks"]["run-shard"]["inputs"]["parameters"]
     assert "code_version" in inputs
+
+
+# ---------------------------------------------------------------------------
+# The API-key secret's name in finalize's environment
+#
+# `finalize` shells out to `bq-context figures`, which reads SECRET_ID to learn
+# which Secret Manager secret holds the Gemini Developer API key. There is no
+# `.env` in the runner image — `.dockerignore` excludes it, under "# Secrets" —
+# so without this the variable is unset in the container, `secret_id()` raises,
+# `api_key` catches it, and figure generation is skipped with a WARN on a green
+# run.
+#
+# The value is baked at compile time rather than passed as a pipeline parameter
+# because `set_env_variable` rejects a PipelineChannel: it fails the compile with
+# `TypeError: bad argument type for built-in operation`. That is the opposite of
+# `set_container_image`, which does take a runtime value — the two are not
+# interchangeable, and the annotation on both is a bare `str`.
+# ---------------------------------------------------------------------------
+def _env(spec: dict[str, Any], executor: str) -> dict[str, str]:
+    container = spec["deploymentSpec"]["executors"][executor]["container"]
+    return {e["name"]: e.get("value", "") for e in container.get("env", [])}
+
+
+def test_finalize_carries_the_secret_name_in_its_environment(spec: dict[str, Any]) -> None:
+    assert _env(spec, "exec-finalize").get("SECRET_ID") == components.SECRET_ID
+
+
+def test_no_other_task_carries_it(spec: dict[str, Any]) -> None:
+    """The 24 shards never generate figures. Scoping the variable to the one task
+    that reads it keeps the blast radius of a rename to that task."""
+    others = {
+        name: _env(spec, name)
+        for name in spec["deploymentSpec"]["executors"]
+        if name != "exec-finalize"
+    }
+    assert not [n for n, env in others.items() if "SECRET_ID" in env]
+
+
+def test_the_compiled_spec_never_contains_the_key_itself(spec: dict[str, Any]) -> None:
+    """The *name* of a secret is not sensitive; its value is.
+
+    `set_env_variable` writes straight into the compiled spec and the PipelineJob
+    resource, both readable by anyone with viewer access, so the key is fetched
+    from Secret Manager at runtime and must never be baked. This asserts the
+    distinction holds rather than trusting that nobody takes the shortcut.
+    """
+    rendered = yaml.safe_dump(spec)
+    assert "AIza" not in rendered
+    assert "GOOGLE_API_KEY" not in rendered
 
 
 # ---------------------------------------------------------------------------

@@ -133,6 +133,13 @@ def bq_context_pipeline(
     )
     finalize.set_display_name("merge, score, verify")
     finalize.set_caching_options(enable_caching=False)
+    # Only this task reads it: `finalize` shells out to `bq-context figures`, and
+    # the 24 shards never generate figures. Set unconditionally rather than only
+    # when non-empty, so the variable is always visible in the compiled spec and
+    # the console — an absent key is then obvious rather than looking like a task
+    # that was never configured. The value is the secret's *name*; see
+    # components.SECRET_ID for why it cannot be a pipeline parameter.
+    finalize.set_env_variable("SECRET_ID", components.SECRET_ID)
 
     # Kept nested rather than combined: the indentation mirrors the pipeline's
     # actual structure, which is the thing a reader needs to see.

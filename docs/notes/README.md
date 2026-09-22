@@ -66,6 +66,9 @@ notes.
 
 ## How to run it
 
+- [`notebooks/walkthrough.ipynb`](../../notebooks/walkthrough.ipynb) — the six approaches
+  unrolled by hand, with outputs. Executes end to end; `tests/test_notebook.py` guards it
+  against package drift.
 - [`experiments/README.md`](../../experiments/README.md) — prerequisites, the local and pipeline
   workflows, resume semantics, and reading the report.
 

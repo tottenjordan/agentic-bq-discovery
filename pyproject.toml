@@ -64,6 +64,12 @@ ignore = [
 # imports inside the test body on purpose (PLC0415).
 "tests/*" = ["PLR2004", "SLF001", "INP001", "PLC0415"]
 
+# The walkthrough notebook is a teaching artifact: printing intermediate state
+# *is* its output, so T201 would fire on essentially every cell. Deliberately
+# the only rule waived — everything else ruff flags there has been fixed rather
+# than ignored, so the notebook stays honest about the package's real API.
+"notebooks/*.ipynb" = ["T201"]
+
 # Vendored from statmike/vertex-ai-mlops (see NOTICE). Kept close to upstream so
 # the diff stays reviewable and we can re-sync; it is script-style code, not
 # library code. This list is exactly the rules upstream trips today — it is a

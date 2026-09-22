@@ -276,6 +276,13 @@ The brief is *subtractive* — it strips only the heavy profiling block, so chea
 
 ## 🚀 Getting Started
 
+> **Prefer to read code than docs?** The
+> [**step-by-step walkthrough notebook**](notebooks/walkthrough.ipynb) unrolls
+> all six approaches by hand against the live corpus — one question, six
+> retrieval strategies, and the exact metadata each one puts in front of the
+> reranker. It ships with outputs, so it is readable on GitHub without running
+> anything.
+
 ### System requirements
 
 | Requirement | Notes |
@@ -414,6 +421,9 @@ Full command reference: [`experiments/README.md`](experiments/README.md).
 ## 🗂️ Project Structure
 
 ```
+notebooks/
+└── walkthrough.ipynb       # Six approaches, step by step, against the live corpus
+
 src/bq_context/
 ├── config.py               # Locations + ExperimentConfig, frozen. No globals.
 ├── runtime.py              # TierContext in a ContextVar — the parallelism unlock

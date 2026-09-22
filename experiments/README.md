@@ -75,6 +75,13 @@ Pipelines. Both run the same code — each pipeline component is a thin wrapper
 over the same CLI — so anything that fails in the pipeline reproduces locally
 with one command.
 
+### Interactively, one approach at a time
+
+Before running shards, [`notebooks/walkthrough.ipynb`](../notebooks/walkthrough.ipynb)
+unrolls each approach cell by cell — discover, preview what the reranker
+receives, rerank — so you can see *why* two approaches disagree rather than only
+that they do. It runs against the same live corpus and needs no experiment.
+
 ### Locally, a shard at a time
 
 ```bash

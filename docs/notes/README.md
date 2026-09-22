@@ -19,6 +19,10 @@ notes.
 
 ### The experiment
 
+- [full-01 — the first complete 3,000-cell run](full-run-results.md) — the approach comparison is
+  sound and reproduces upstream's reranker finding; the **tier comparison is invalid**, because
+  Dataplex search-index warm-up was confounded with shard execution order.
+
 - [Upstream experiment: findings and implications](upstream-experiment.md) — their headline
   result is a **null result** (flat tier response, ceiling effect); the per-approach cost table
   that drives our sharding; the three globals; upstream's known defects.

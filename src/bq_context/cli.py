@@ -127,6 +127,76 @@ def _code_version() -> str:
 
 
 #: Top-level capsule keys that indicate a table-level enrichment aspect.
+#: Max acceptable spread in search hits across tiers, as a fraction of the mean.
+#: Above this the semantic index has not converged and tier is confounded with
+#: shard execution order.
+_SEARCH_SPREAD_TOLERANCE = 0.15
+
+#: Fewer tiers than this and there is nothing to compare.
+_MIN_TIERS_TO_COMPARE = 2
+
+#: ...but only when the absolute gap is at least this many hits. Counts here are
+#: small (3-6), so a single-hit difference is 25-30% and would cry wolf on a
+#: converged index. The real failure was a gap of 2+ (2.88 vs 4.96 mean hits).
+_SEARCH_SPREAD_MIN_GAP = 2
+
+#: A question whose answer table exists identically in every tier.
+_CONVERGENCE_PROBE = "What are the busiest bike share stations in Austin by month?"
+
+
+def _search_hits_by_tier(config: ExperimentConfig, tiers: list[int]) -> dict[int, int]:
+    """Raw semantic-search hit count per tier for one fixed question.
+
+    The corpus is identical across tiers, so a converged index returns the same
+    count everywhere. A rising count is the signature of an index still warming
+    after provisioning.
+    """
+    from bq_context.context_cache import TableCache  # noqa: PLC0415
+    from bq_context.discovery_common import search_entries_scoped  # noqa: PLC0415
+    from bq_context.runtime import TierContext, tier_scope  # noqa: PLC0415
+
+    hits: dict[int, int] = {}
+    for tier in tiers:
+        ctx = TierContext.build(config, tier, TableCache.empty())
+        with tier_scope(ctx):
+            _, stats = search_entries_scoped(_CONVERGENCE_PROBE)
+        hits[tier] = int(stats["raw_search_count"])
+    return hits
+
+
+def assess_search_convergence(hits: dict[int, int]) -> list[str]:
+    """Warn when semantic-search hit counts disagree across tiers.
+
+    This exists because it already happened. In the first full 3,000-cell run
+    the three search-based approaches showed discovery recall climbing
+    0.52 -> 0.68 -> 0.97 -> 0.92 across tiers 0-3, which reads as a large
+    enrichment effect. It was not. Shards run in plan order, tier 0 first, and
+    the Dataplex semantic index was still warming: re-running every tier later
+    gave an identical 0.967 everywhere. Tier was confounded with elapsed time.
+
+    Returns a list of warnings; empty means converged.
+    """
+    counts = list(hits.values())
+    if len(counts) < _MIN_TIERS_TO_COMPARE or not any(counts):
+        return []
+    mean = sum(counts) / len(counts)
+    gap = max(counts) - min(counts)
+    spread = gap / mean if mean else 0.0
+    if spread <= _SEARCH_SPREAD_TOLERANCE or gap < _SEARCH_SPREAD_MIN_GAP:
+        return []
+    detail = ", ".join(f"tier{t}={n}" for t, n in sorted(hits.items()))
+    return [
+        (
+            f"semantic search returns different hit counts per tier ({detail}, "
+            f"spread {spread:.0%}). The corpus is identical across tiers, so the "
+            "Dataplex index has not converged. Because shards run in plan order, "
+            "tier would be confounded with elapsed time and enrichment would "
+            "appear to improve retrieval when it does not. Wait and re-check "
+            "before running a scoring sweep."
+        )
+    ]
+
+
 _ASPECT_KEYS = ("guidelines", "overview", "business_descriptions")
 
 #: Per-column capsule keys. Glossary definitions arrive here, as ``terms``, on
@@ -595,6 +665,13 @@ def preflight(
         )
 
     problems, warnings = assess_ladder(ladder, empty=len(caches[tier]) == 0)
+
+    if len(caches) > 1:
+        probe = _search_hits_by_tier(config, sorted(caches))
+        typer.echo(
+            "search hits/tier  " + "  ".join(f"tier{t}={n}" for t, n in sorted(probe.items()))
+        )
+        warnings.extend(assess_search_convergence(probe))
 
     for warning in warnings:
         typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)

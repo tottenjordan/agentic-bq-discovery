@@ -21,6 +21,7 @@ from bq_context.cli import (
     _effective_identity,
     app,
     assess_ladder,
+    assess_search_convergence,
 )
 from bq_context.runner.cells import APPROACHES
 from bq_context.runner.models import Cell, ShardSpec
@@ -547,3 +548,42 @@ def test_user_credentials_resolve_to_nothing_rather_than_the_vm_sa() -> None:
         pass
 
     assert _effective_identity(FakeUserCreds()) == ""  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Search index convergence
+# ---------------------------------------------------------------------------
+def test_converged_index_produces_no_warning() -> None:
+    """Identical corpora across tiers should return identical hit counts."""
+    assert assess_search_convergence({0: 5, 1: 5, 2: 5, 3: 5}) == []
+
+
+def test_a_single_hit_difference_does_not_cry_wolf() -> None:
+    """Counts are small (3-6), so +-1 is 20-30% and happens on a healthy index."""
+    assert assess_search_convergence({0: 3, 1: 3, 2: 3, 3: 4}) == []
+
+
+def test_a_warming_index_is_caught() -> None:
+    """The real failure, replayed.
+
+    In the first full 3,000-cell run the three search-based approaches showed
+    discovery recall climbing 0.52 -> 0.68 -> 0.97 -> 0.92 across tiers, which
+    reads as a large enrichment effect. It was not: shards run in plan order,
+    tier 0 first, and the Dataplex index was still warming. Re-running every
+    tier hours later gave an identical 0.967. These are the mean hit counts
+    observed during that run, rounded.
+    """
+    warnings = assess_search_convergence({0: 3, 1: 4, 2: 5, 3: 5})
+    assert len(warnings) == 1
+    assert "has not converged" in warnings[0]
+    assert "confounded with elapsed time" in warnings[0]
+
+
+def test_convergence_check_needs_at_least_two_tiers() -> None:
+    assert assess_search_convergence({3: 5}) == []
+    assert assess_search_convergence({}) == []
+
+
+def test_all_zero_hits_is_not_a_convergence_warning() -> None:
+    """Zero everywhere is a scoping or permissions problem, not index warm-up."""
+    assert assess_search_convergence({0: 0, 1: 0, 2: 0, 3: 0}) == []

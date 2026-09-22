@@ -923,6 +923,35 @@ def score(
 
 
 @app.command()
+def figures(
+    out_dir: Annotated[Path, typer.Option("--dir", help="Where to write the PNGs.")] = Path(
+        "figures"
+    ),
+) -> None:
+    """Generate architecture diagrams with PaperBanana. Off the default path.
+
+    Diagrams only — never the data charts. `discovery_vs_final`, `recall_vs_tier`
+    and `latency_cost` plot measured numbers, and a generative image model
+    producing bars whose heights are not derived from the data would be a
+    correctness hazard. Those stay in matplotlib.
+
+    Skips with a message rather than failing when the Gemini Developer API key is
+    absent: this runs inside the exit task, which must only turn a run red for
+    missing cells.
+    """
+    from bq_context.scoring.figures import generate  # noqa: PLC0415
+
+    written = generate(_config().project, out_dir)
+    if not written:
+        typer.secho(
+            "No figures generated (no API key, or PaperBanana absent).", fg=typer.colors.YELLOW
+        )
+        return
+    for path in written:
+        typer.echo(str(path))
+
+
+@app.command()
 def report(
     experiment_id: ExperimentId,
     out: OutOpt = DEFAULT_OUT,

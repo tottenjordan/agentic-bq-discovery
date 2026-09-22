@@ -34,6 +34,7 @@ from typing import NamedTuple
 from kfp import dsl
 
 __all__ = [
+    "REPORT_IMAGE",
     "RUNNER_IMAGE",
     "ensure_infra",
     "finalize",
@@ -47,6 +48,12 @@ __all__ = [
 #: KFP execution cache keys on the image, so a floating tag would let a cached
 #: "success" come from code that no longer exists.
 RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
+
+#: The exit task's image: the runner plus PaperBanana. Separate because that is
+#: ~51 extra packages needed by exactly one task, and putting them in the shared
+#: image would make all 24 shards pull them for nothing. Defaults to the runner
+#: so the pipeline still compiles and runs without figure generation.
+REPORT_IMAGE = os.environ.get("BQ_CONTEXT_REPORT_IMAGE") or RUNNER_IMAGE
 
 
 class Preflight(NamedTuple):
@@ -305,7 +312,7 @@ def run_shard(
     sys.exit(returncode)
 
 
-@dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
+@dsl.component(base_image=REPORT_IMAGE, install_kfp_package=False)
 def finalize(
     project: str,
     experiment_id: str,
@@ -319,6 +326,7 @@ def finalize(
     run_metrics: dsl.Output[dsl.Metrics],
     require_complete: bool = True,
     question_limit: int = 0,
+    refresh_figures: bool = False,
 ) -> None:
     """Merge, score, plot — then fail if cells are missing.
 
@@ -373,6 +381,10 @@ def finalize(
         # Last: it inlines the figures plot just produced.
         ["bq-context", "report", *base, "--html", summary.path, "--figures", plots_dir],
     )
+    if refresh_figures:
+        # Architecture diagrams only, and off by default: generation is slow,
+        # paid and non-deterministic, and they do not change between runs.
+        steps = (*steps[:-1], ["bq-context", "figures", "--dir", plots_dir], steps[-1])
     for args in steps:
         print("+ " + " ".join(args), flush=True)
         completed = subprocess.run(args, check=False)

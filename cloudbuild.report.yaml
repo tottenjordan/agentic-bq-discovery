@@ -1,0 +1,20 @@
+# Builds the report image: the runner plus PaperBanana.
+#
+# Substitutions do not nest, so _RUNNER_IMAGE is passed in fully resolved by
+# `make image-report` rather than composed from ${PROJECT_ID} here — a nested
+# substitution fails to parse, which cost time on the runner build.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - RUNNER_IMAGE=${_RUNNER_IMAGE}
+      - -f
+      - Dockerfile.report
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/report:${_TAG}
+      - .
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/report:${_TAG}
+options:
+  logging: CLOUD_LOGGING_ONLY

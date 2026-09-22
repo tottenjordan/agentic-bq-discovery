@@ -27,6 +27,11 @@ bq-context = "bq_context.cli:app"
 requires = ["uv_build>=0.11.28,<0.12.0"]
 build-backend = "uv_build"
 
+[project.optional-dependencies]
+# Only the report image installs this. PaperBanana pulls ~51 packages and is
+# needed by exactly one task, so it must not land in the image the 24 shards run.
+figures = ["paperbanana>=0.1"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
@@ -118,6 +123,9 @@ python-version = "3.13"
 # rejects `.items()`. A TypedDict fixes it properly. Task 3 refactors these
 # modules and should delete the corresponding entries here.
 exclude = [
+    # paperbanana is an optional extra installed only in the report image, so a
+    # normal dev checkout cannot resolve it. The import is guarded by try/ImportError.
+    "src/bq_context/scoring/figures.py",
     "src/bq_context/approaches/",
     "src/bq_context/corpus/",
     "src/bq_context/scoring/upstream_build_results.py",

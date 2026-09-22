@@ -78,6 +78,7 @@ def bq_context_pipeline(
     approaches: list = DEFAULT_APPROACHES,
     skip_infra: bool = False,
     require_complete: bool = True,
+    refresh_figures: bool = False,
 ) -> None:
     """Run the factorial.
 
@@ -128,6 +129,7 @@ def bq_context_pipeline(
         approaches=approaches,
         require_complete=require_complete,
         question_limit=question_limit,
+        refresh_figures=refresh_figures,
     )
     finalize.set_display_name("merge, score, verify")
     finalize.set_caching_options(enable_caching=False)

@@ -1,0 +1,21 @@
+# The exit task's image: the runner, plus PaperBanana for architecture diagrams.
+#
+# Separate from the runner because PaperBanana pulls ~51 packages and is needed
+# by exactly one task. Folding it into the shared image would make all 24 shards
+# pull it for nothing, on every run.
+#
+# FROM the runner rather than rebuilding from python:3.13-slim, so the two images
+# cannot drift on bq_context itself — the report task runs the same merge, score
+# and plot code as everything else.
+ARG RUNNER_IMAGE
+FROM ${RUNNER_IMAGE}
+
+# The figures extra, not a runtime dependency: `uv sync` for a developer, and the
+# runner image itself, both stay lean.
+RUN uv pip install --python /app/.venv/bin/python 'paperbanana>=0.1'
+
+# PaperBanana authenticates only via the Gemini Developer API. The runner image
+# sets GOOGLE_GENAI_USE_VERTEXAI=true globally and google-genai honours that over
+# GOOGLE_API_KEY, so scoring/figures.py unsets it for that call alone. It is NOT
+# unset here: merge, score and plot run in this same container and should keep
+# using Vertex.

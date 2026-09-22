@@ -168,3 +168,19 @@ def test_ensure_infra_is_non_interactive() -> None:
 def test_finalize_merges_scores_and_plots_in_that_order() -> None:
     """Scoring reads merged results, and plotting reads scores."""
     assert [argv[1] for argv in _invocations("finalize")] == ["merge", "score", "plot"]
+
+
+# ---------------------------------------------------------------------------
+# finalize must keep what it produces
+# ---------------------------------------------------------------------------
+def test_finalize_persists_the_report_and_figures() -> None:
+    """Regression: every run rendered these and destroyed the container holding them.
+
+    `score` writes markdown only when `--report PATH` is given, and `plot`
+    defaults `--plots-dir` to the relative `Path("plots")` — which resolved to
+    `/app/plots/` inside the task container. So the report existed on stdout
+    only and the three figures were deleted with the pod, on every run.
+    """
+    argv = {a[1]: a for a in _invocations("finalize")}
+    assert "--report" in argv["score"], "the markdown report was stdout-only"
+    assert "--plots-dir" in argv["plot"], "figures went to a relative path inside the container"

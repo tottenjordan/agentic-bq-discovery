@@ -238,11 +238,44 @@ def finalize(
     for approach in approaches:
         merge += ["--approach", str(approach)]
 
-    for args in (merge, ["bq-context", "score", *base], ["bq-context", "plot", *base]):
+    # Give score and plot real destinations. Both flags already existed and were
+    # simply never passed: score wrote markdown only with --report, and plot's
+    # --plots-dir defaulted to a *relative* path, so the figures landed in
+    # /app/plots inside this container and died with it. Every run produced them
+    # and threw them away.
+    import tempfile
+
+    workdir = tempfile.mkdtemp(prefix="bq-context-finalize-")
+    report_path = f"{workdir}/report.md"
+    plots_dir = f"{workdir}/plots"
+
+    steps = (
+        merge,
+        ["bq-context", "score", *base, "--report", report_path],
+        ["bq-context", "plot", *base, "--plots-dir", plots_dir],
+    )
+    for args in steps:
         print("+ " + " ".join(args), flush=True)
         completed = subprocess.run(args, check=False)
         if completed.returncode != 0:
             print(f"WARN  {args[1]} exited {completed.returncode}", flush=True)
+
+    # Upload to the stable experiment prefix rather than a KFP artifact path.
+    # Artifact URIs embed the pipeline job id and change every run; these are the
+    # copies a human goes looking for weeks later.
+    import pathlib
+
+    from bq_context.runner.resume import experiment_prefix
+    from bq_context.runner.store import store_for
+
+    store = store_for(out)
+    prefix = experiment_prefix(experiment_id)
+    if pathlib.Path(report_path).exists():
+        store.write_text(f"{prefix}/scoring/report.md", pathlib.Path(report_path).read_text())
+        print(f"report    {store.uri(f'{prefix}/scoring/report.md')}", flush=True)
+    for png in sorted(pathlib.Path(plots_dir).glob("*.png")):
+        store.write_bytes(f"{prefix}/plots/{png.name}", png.read_bytes(), "image/png")
+        print(f"figure    {store.uri(f'{prefix}/plots/{png.name}')}", flush=True)
 
     if not require_complete:
         return

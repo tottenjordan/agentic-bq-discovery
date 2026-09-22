@@ -72,7 +72,7 @@ def validate_config(project: str, out: str, expect_identity: str = "") -> None:
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
-def ensure_infra(project: str, skip: bool = False) -> None:
+def ensure_infra(project: str, out: str, skip: bool = False) -> None:
     """Create the four-tier corpus. Idempotent, 12-40 minutes.
 
     One component rather than five (datasets, views, scans, glossary, links):
@@ -82,6 +82,10 @@ def ensure_infra(project: str, skip: bool = False) -> None:
     ``skip`` is handled here rather than by wrapping the task in ``dsl.If``,
     because a conditional group cannot be depended on from outside it — preflight
     would then race provisioning instead of waiting for it.
+
+    ``out`` only gets the bucket checked for existence: creating it needs
+    storage.buckets.create, which this service account deliberately lacks, and
+    the bucket must already exist anyway because pipeline_root lives in it.
     """
     import os
     import subprocess
@@ -92,7 +96,7 @@ def ensure_infra(project: str, skip: bool = False) -> None:
         return
 
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
-    args = ["bq-context", "ensure-infra", "--yes"]
+    args = ["bq-context", "ensure-infra", "--out", out, "--yes"]
     print("+ " + " ".join(args), flush=True)
     sys.exit(subprocess.run(args, check=False).returncode)
 

@@ -538,19 +538,35 @@ def validate_config(
 
 @app.command("ensure-infra")
 def ensure_infra(
+    out: OutOpt = DEFAULT_OUT,
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     """Create the four-tier corpus and its catalog enrichment. Idempotent.
 
-    Creates 4 BigQuery datasets, 60 views over bigquery-public-data, 45 Dataplex
-    profile scans, a glossary with 11 terms, 48 entry links, and 4 guidelines
-    aspects. Takes 12-40 minutes, dominated by scan creation and polling.
+    Creates the results bucket, 4 BigQuery datasets, 60 views over
+    bigquery-public-data, 45 Dataplex profile scans, a glossary with 11 terms,
+    48 entry links, and 4 guidelines aspects. Takes 12-40 minutes, dominated by
+    scan creation and polling.
     """
     config = _config()
     typer.echo(f"Creating bigquery_context_tier0..3 in {config.project}.")
     typer.echo("This creates ~160 cloud resources and takes 12-40 minutes.")
     if not yes and not typer.confirm("Proceed?"):
         raise typer.Abort
+
+    # First, because everything downstream writes here and a missing bucket
+    # otherwise surfaces 40 minutes later as a failed shard rather than now.
+    # Almost always a no-op: in a pipeline run the bucket must already exist,
+    # since pipeline_root lives in it.
+    from bq_context.corpus.bucket import ensure_bucket  # noqa: PLC0415
+
+    try:
+        state = ensure_bucket(config, out)
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+    if state != "skipped":
+        typer.echo(f"bucket             {out} ({state})")
 
     # setup.py reads its configuration from the environment at import time, so
     # the environment must be populated before it is imported. Vendored code is

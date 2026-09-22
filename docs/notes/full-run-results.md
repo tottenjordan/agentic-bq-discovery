@@ -72,6 +72,24 @@ discovery at every tier.
 | `bq_tools` / `kc_context` / `context_prefilter` at all tiers | ✅ valid, no retrieval step |
 | **Tier response for the three search approaches** | ❌ **invalid** |
 
+### A second, independent fingerprint
+
+Audited separately, the same confound shows up as **cells where semantic search
+returned nothing at all**:
+
+| approach | tier0 | tier1 | tier2 | tier3 |
+|---|---|---|---|---|
+| `kc_search` / `semantic_context` / `search_direct` | **10** | **5** | 0 | 0 |
+
+Fifteen questions got zero hits, every one of them at the two tiers queried
+earliest in the run, none at the two queried last. Those cells score recall 0
+and, for `kc_search`, make no reranker call at all — `store_empty()` firing
+correctly, not a bug, but it does mean `reranker_calls` has a legitimate `min=0`
+for that approach.
+
+Two independent measures (hit counts and zero-hit cells) pointing the same way
+is what moves this from "suspicious" to established.
+
 ### The guard
 
 `bq-context preflight` now probes one fixed question against every tier and
@@ -91,6 +109,42 @@ plan so tier does not correlate with execution order** would make the design
 robust rather than merely monitored. Worth doing before the next scoring sweep —
 a residual warm-up drift too small to trip the guard would still bias tier
 systematically as long as tier 0 always runs first.
+
+## Provenance and caveats from the resume
+
+**The dataset is built from two code versions.** 2,993 cells were produced by
+`5de0dde` and 7 by `28a7b2c`. The only difference between them is the ADK retry
+configuration, which changes nothing about agent behaviour in the absence of a
+429, so the results are comparable — but the mixture is real and should be
+stated rather than discovered later.
+
+**The retry fix was not exercised by the resume.** No genuine 429 occurred in
+the resumed run; concurrency was far lower, with only 7 cells of real work
+spread across 24 shards. The fix is unit-tested and in place, but it has not yet
+been proven under the load that produced the original failures.
+
+**Resuming after a code change costs a full shard-startup sweep.** The KFP cache
+key includes the image, so changing it invalidated all 24 shards: every one
+started a VM, and 19 of them found nothing to do and exited. That is correct —
+a cache that ignored the image would silently return results from old code — but
+it is roughly 54 machine-minutes of no-op startup to re-run 7 cells. Worth
+knowing before treating resume-after-a-fix as free.
+
+**The re-run cells are not anomalous.** All 7 scored recall 1.00, at or slightly
+above their same-(tier, approach) peers, with latency in range. All 7 are
+`bq_tools` or `context_prefilter` — full-corpus approaches that perform no
+retrieval — so they are immune to the search-index confound above and did not
+contaminate the tier axis further.
+
+## Integrity
+
+Audited after the resume:
+
+```
+expected keys 3000 · got 3000 · missing 0 · unexpected 0 · duplicates 0
+all status ok: True · all 24 (tier, approach) groups: exactly 125 cells
+search_direct reranker calls: 0 everywhere (by design)
+```
 
 ## Reliability
 

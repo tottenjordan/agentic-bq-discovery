@@ -136,10 +136,11 @@ def test_code_version_reaches_every_shard(spec: dict[str, Any]) -> None:
 def test_every_component_pins_the_same_immutable_image(spec: dict[str, Any]) -> None:
     """One image, still.
 
-    A second image — the runner plus PaperBanana — was built and then deleted.
-    A task's image is fixed at compile time, so it could not be handed over by an
-    earlier step, and a cold install of the extra measures ~3s against minutes to
-    build and push. `finalize` installs it at runtime when figures are requested.
+    A second image — the runner plus PaperBanana — was built and then deleted, on
+    cost rather than feasibility: a cold install of the extra measures ~3s, and a
+    dynamic image would still have to be built and pushed. `finalize` installs it
+    at runtime when figures are requested. `set_container_image` remains available
+    if that trade ever changes; see docs/notes/kfp-pipeline.md.
     """
     images = {c["container"]["image"] for c in spec["deploymentSpec"]["executors"].values()}
     assert len(images) == 1

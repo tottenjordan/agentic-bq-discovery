@@ -63,6 +63,8 @@ notes.
   Build substitutions do not nest.
 - [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline
   YAML (with the drift incident that proves it), and measured uv-in-Docker cold-start fixes.
+- [The BigQuery query sink](bigquery-sink.md) — a sink, not the system of record, and why
+  handing a JSON column a string silently makes the table write-only.
 - [The test suite](test-suite.md) — why 59% is close to honest, test the seams rather than both
   sides of them, and mutation-test every guard (three here once asserted nothing).
 

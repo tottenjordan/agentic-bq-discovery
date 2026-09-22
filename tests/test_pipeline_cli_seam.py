@@ -90,6 +90,7 @@ COMPONENT_ARGS: dict[str, dict[str, Any]] = {
         "approaches": ["bq_tools"],
         "merged": _artifact(dsl.Dataset, "merged"),
         "report": _artifact(dsl.Markdown, "report"),
+        "summary": _artifact(dsl.HTML, "summary"),
         "run_metrics": _artifact(dsl.Metrics, "run_metrics"),
     },
 }
@@ -195,7 +196,7 @@ def test_ensure_infra_is_non_interactive() -> None:
 
 def test_finalize_merges_scores_and_plots_in_that_order() -> None:
     """Scoring reads merged results, and plotting reads scores."""
-    assert [argv[1] for argv in _invocations("finalize")] == ["merge", "score", "plot"]
+    assert [argv[1] for argv in _invocations("finalize")] == ["merge", "score", "plot", "report"]
 
 
 # ---------------------------------------------------------------------------

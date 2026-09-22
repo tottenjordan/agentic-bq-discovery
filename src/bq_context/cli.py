@@ -927,6 +927,58 @@ def score(
 
 
 @app.command()
+def report(
+    experiment_id: ExperimentId,
+    out: OutOpt = DEFAULT_OUT,
+    html_out: Annotated[Path, typer.Option("--html", help="Write the report here.")] = Path(
+        "executive.html"
+    ),
+    figures_dir: Annotated[
+        Path | None, typer.Option("--figures", help="PNGs to inline, e.g. from `plot`.")
+    ] = None,
+) -> None:
+    """Render the executive report: numbers, figures, and the caveats that apply.
+
+    Separate from `score` because it carries interpretation, not just metrics. The
+    caveats are the point — a flat tier response looks the same whether enrichment
+    does nothing, the corpus is too easy to show it, or lookupContext silently
+    returned nothing, and only the caveats distinguish those.
+    """
+    from bq_context.runner.summaries import load_summaries  # noqa: PLC0415
+    from bq_context.scoring.executive import (  # noqa: PLC0415
+        convergence_from_cells,
+        render_html,
+    )
+    from bq_context.scoring.merge import load_merged  # noqa: PLC0415
+    from bq_context.scoring.metrics import score_cell  # noqa: PLC0415
+
+    store = store_for(out)
+    cells = load_merged(store, experiment_id)
+    if not cells:
+        typer.secho(
+            f"No merged results for {experiment_id}. Run `bq-context merge` first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    scores = [s for c in cells if (s := score_cell(c))]
+    figures = sorted(figures_dir.glob("*.png")) if figures_dir and figures_dir.exists() else []
+    document = render_html(
+        scores,
+        experiment_id=experiment_id,
+        figures=figures,
+        convergence_warnings=convergence_from_cells(cells),
+        code_versions={str(c.get("code_version", "")) for c in cells if c.get("code_version")},
+        shard_summaries=load_summaries(store, experiment_id),
+        errors=len(cells) - len(scores),
+    )
+    html_out.parent.mkdir(parents=True, exist_ok=True)
+    html_out.write_text(document)
+    typer.echo(f"Wrote {html_out} ({len(document):,} bytes, {len(figures)} figure(s))")
+
+
+@app.command()
 def plot(
     experiment_id: ExperimentId,
     out: OutOpt = DEFAULT_OUT,

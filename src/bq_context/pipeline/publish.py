@@ -107,3 +107,25 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
     for approach in approaches:
         args += ["--approach", str(approach)]
     return args
+
+
+def ensure_placeholder(path: str, body: str) -> None:
+    """Guarantee an artifact file exists, even when the step that writes it failed.
+
+    KFP creates only the *parent* directory of an artifact path. Leaving the file
+    unwritten registers an artifact pointing at nothing, and the UI shows a dead
+    link — on exactly the runs someone needs to read.
+    """
+    target = Path(path)
+    if not target.exists():
+        target.write_text(body)
+
+
+def publish_summary(store: ArtifactStore, experiment_id: str, summary_path: str) -> str | None:
+    """Copy the executive HTML to the stable prefix. Returns its path."""
+    source = Path(summary_path)
+    if not source.exists():
+        return None
+    target = f"{experiment_prefix(experiment_id)}/scoring/executive.html"
+    store.write_text(target, source.read_text())
+    return target

@@ -294,6 +294,7 @@ def finalize(
     approaches: list,
     merged: dsl.Output[dsl.Dataset],
     report: dsl.Output[dsl.Markdown],
+    summary: dsl.Output[dsl.HTML],
     run_metrics: dsl.Output[dsl.Metrics],
     require_complete: bool = True,
     question_limit: int = 0,
@@ -348,6 +349,8 @@ def finalize(
         merge,
         ["bq-context", "score", *base, "--report", report_path],
         ["bq-context", "plot", *base, "--plots-dir", plots_dir],
+        # Last: it inlines the figures plot just produced.
+        ["bq-context", "report", *base, "--html", summary.path, "--figures", plots_dir],
     )
     for args in steps:
         print("+ " + " ".join(args), flush=True)
@@ -358,7 +361,13 @@ def finalize(
     # Upload to the stable experiment prefix rather than a KFP artifact path.
     # Artifact URIs embed the pipeline job id and change every run; these are the
     # copies a human goes looking for weeks later.
-    from bq_context.pipeline.publish import merge_report, publish_figures, publish_report
+    from bq_context.pipeline.publish import (
+        ensure_placeholder,
+        merge_report,
+        publish_figures,
+        publish_report,
+        publish_summary,
+    )
     from bq_context.runner.resume import experiment_prefix
     from bq_context.runner.store import store_for
 
@@ -372,9 +381,11 @@ def finalize(
     # past KFP's executor before write_executor_output runs, so a raise here would
     # discard every .uri and .metadata mutation — on precisely the red runs a
     # human most wants to inspect.
-    if not os.path.exists(report.path):  # noqa: PTH110
-        with open(report.path, "w") as handle:  # noqa: PTH123
-            handle.write(f"# Results — {experiment_id}\n\nScoring produced no report.\n")
+    ensure_placeholder(report.path, f"# Results — {experiment_id}\n\nNo report produced.\n")
+    ensure_placeholder(
+        summary.path, f"<html><body><h1>{experiment_id}</h1><p>No report.</p></body></html>"
+    )
+    publish_summary(store, experiment_id, summary.path)
 
     report_json = merge_report(store, experiment_id)
     merged.uri = store.uri(f"{experiment_prefix(experiment_id)}/merged/results.jsonl")

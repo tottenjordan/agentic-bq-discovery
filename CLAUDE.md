@@ -35,7 +35,7 @@ or below it, never in a component.
 make install        # uv sync --all-groups
 make check          # lint + types + tests, what CI runs
 make format         # ruff format + safe fixes
-uv run bq-context --help          # 12 subcommands
+uv run bq-context --help          # 13 subcommands
 ```
 
 Never run bare `python` or `pytest`; go through `uv run`.

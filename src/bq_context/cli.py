@@ -961,8 +961,20 @@ def submit_pipeline_cmd(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Compile and print, do not submit.")
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Disable execution caching for the whole job, overriding every per-task setting.",
+        ),
+    ] = False,
 ) -> None:
-    """Compile and submit the pipeline to Vertex AI."""
+    """Compile and submit the pipeline to Vertex AI.
+
+    Without ``--no-cache`` the job defers to the per-task settings in ``dag.py``,
+    which is what lets finished shards be skipped while the enrichment gate still
+    runs every time.
+    """
     import os  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
@@ -1012,6 +1024,8 @@ def submit_pipeline_cmd(
             service_account=service_account,
             experiment_id=experiment_id,
             parameter_values=params,
+            # None defers to per-task settings; False is a blunt global off.
+            enable_caching=False if no_cache else None,
         )
         typer.secho(f"\nsubmitted {job.resource_name}", fg=typer.colors.GREEN)
 

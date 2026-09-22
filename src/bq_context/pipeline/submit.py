@@ -56,15 +56,31 @@ def submit_pipeline(  # noqa: PLR0913 - submission parameters are the API
     service_account: str,
     experiment_id: str,
     parameter_values: dict[str, Any],
-    enable_caching: bool = True,
+    enable_caching: bool | None = None,
     wait: bool = False,
 ) -> Any:
     """Submit the pipeline and return the job.
 
-    ``enable_caching`` is safe here only because every shard takes
-    ``code_version`` as an explicit input: KFP keys its cache on component
-    inputs, so a changed commit invalidates the shards while an unchanged one
-    skips finished work without even starting a VM.
+    ``enable_caching=None`` is load-bearing, not a lazy default. The Vertex SDK
+    rewrites the compiled spec whenever it is *not* None::
+
+        for task in component["dag"]["tasks"].values():
+            task["cachingOptions"] = {"enableCache": enable_caching}
+
+    That is a blunt overwrite of every task in every DAG. This used to default to
+    ``True``, which silently discarded every ``set_caching_options(False)`` in
+    ``dag.py`` — including the one on ``preflight``, the gate that decides whether
+    catalog enrichment is real. ``tests/test_pipeline.py`` inspects the compiled
+    spec and so could not see it; ``tests/test_submit.py`` asserts it here.
+
+    ``False`` remains a safe override because it can only ever disable caching.
+    ``True`` is not offered: it cannot be expressed without overriding tasks that
+    deliberately opted out.
+
+    Shard-level caching is still safe, and still worth having: every shard takes
+    ``code_version`` and ``corpus_fingerprint`` as explicit inputs, so a changed
+    commit or a changed corpus invalidates them while an unchanged pair skips
+    finished work without starting a VM.
     """
     from google.cloud import aiplatform  # noqa: PLC0415
 

@@ -42,6 +42,7 @@ from bq_context.runner.resume import (
     next_attempt_path,
     shard_prefix,
 )
+from bq_context.runner.summaries import write_summary
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -174,8 +175,7 @@ class ShardRunner:
         )
 
         if not todo:
-            self._write_marker(success=True)
-            return self._result(planned=len(planned), already_done=len(finished))
+            return self._finish(success=True, planned=len(planned), already_done=len(finished))
 
         with tempfile.TemporaryDirectory(prefix="bq-context-shard-") as tmpdir:
             self._buffer = Path(tmpdir) / "shard.jsonl"
@@ -190,8 +190,11 @@ class ShardRunner:
                         await heartbeat
                     self._upload()
 
-        self._write_marker(success=self._failed == 0 and not self._abort_reason)
-        return self._result(planned=len(planned), already_done=len(finished))
+        return self._finish(
+            success=self._failed == 0 and not self._abort_reason,
+            planned=len(planned),
+            already_done=len(finished),
+        )
 
     async def _run_cells(self, todo: list[str]) -> None:
         for key in todo:
@@ -280,6 +283,18 @@ class ShardRunner:
         if self._abort_reason:
             body += f"\naborted: {self._abort_reason}"
         self.store.write_text(f"{shard_prefix(self.spec)}/{name}", body + "\n")
+
+    def _finish(self, *, success: bool, planned: int, already_done: int) -> ShardResult:
+        """Write the marker and the summary, then return the result.
+
+        One exit point rather than two: the summary is the only durable record
+        of cache_warm_s and abort_reason, and a second return path is how a
+        write like this gets forgotten on the branch nobody tests.
+        """
+        self._write_marker(success=success)
+        result = self._result(planned=planned, already_done=already_done)
+        write_summary(self.store, result)
+        return result
 
     def _result(self, *, planned: int, already_done: int) -> ShardResult:
         return ShardResult(

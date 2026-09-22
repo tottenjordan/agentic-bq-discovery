@@ -69,6 +69,23 @@ def latest_attempt_number(store: ArtifactStore, spec: ShardSpec) -> int:
     return max(numbers, default=0)
 
 
+def summary_path(attempt_path: str) -> str:
+    """Path of the ShardResult summary paired with ``attempt_path``.
+
+    One summary per *attempt*, not per shard. A resumed shard's first attempt is
+    usually the interesting one — it holds the failure that caused the resume —
+    and a single ``summary.json`` would be overwritten by the attempt that
+    succeeded.
+
+    Deliberately outside ``_ATTEMPT_RE`` so ``load_shard_records`` keeps
+    skipping it; a summary read as cells would be a parse error per resume.
+    """
+    if attempt_path.endswith(".jsonl"):
+        return attempt_path.replace("attempt-", "summary-").removesuffix(".jsonl") + ".json"
+    # Never raise: failing to name a diagnostics file must not fail the shard.
+    return f"{attempt_path or 'summary'}.json"
+
+
 def next_attempt_path(store: ArtifactStore, spec: ShardSpec) -> str:
     """Path for a fresh attempt file, never colliding with a previous one."""
     return f"{shard_prefix(spec)}/attempt-{latest_attempt_number(store, spec) + 1:04d}.jsonl"

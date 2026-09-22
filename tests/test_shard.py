@@ -238,3 +238,38 @@ async def test_all_records_land_regardless_of_upload_cadence(
     ).run()
 
     assert completed_keys(load_shard_records(store, spec)) == set(spec.planned_cells())
+
+
+async def test_a_run_persists_its_summary(tmp_path: Path) -> None:
+    """The shard's own record must outlive the process.
+
+    cache_warm_s and abort_reason exist nowhere else once it exits: the first
+    had to be recovered from Cloud Logging after the fact, and the second is the
+    entire diagnosis for a shard the circuit breaker stopped.
+    """
+    from bq_context.runner.summaries import load_summaries
+
+    spec = make_spec()
+    store = LocalStore(tmp_path)
+    await ShardRunner(
+        spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6, cache_warm_s=2.5
+    ).run()
+
+    (summary,) = load_summaries(store, spec.experiment_id)
+    assert summary.shard_id == spec.shard_id
+    assert summary.cache_warm_s == 2.5, "the number that was previously dropped"
+    assert summary.succeeded == summary.planned
+
+
+async def test_a_summary_is_written_even_when_there_was_nothing_to_do(tmp_path: Path) -> None:
+    """The early-return branch is the one a second write would be forgotten on."""
+    from bq_context.runner.summaries import load_summaries
+
+    spec = make_spec()
+    store = LocalStore(tmp_path)
+    await ShardRunner(spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6).run()
+    await ShardRunner(spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6).run()
+
+    summaries = load_summaries(store, spec.experiment_id)
+    assert len(summaries) == 2, "the no-op resume must record a summary too"
+    assert summaries[-1].executed == 0

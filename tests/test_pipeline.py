@@ -295,3 +295,53 @@ def test_every_task_in_the_dag_has_a_caching_decision(spec: dict[str, Any]) -> N
     """
     groups = {"exit-handler-1", "for-loop-2"}
     assert set(_all_tasks(spec)) - groups == set(CACHING)
+
+
+# ---------------------------------------------------------------------------
+# The extracted module must be self-sufficient
+# ---------------------------------------------------------------------------
+def test_every_component_body_resolves_in_the_namespace_kfp_gives_it(
+    spec: dict[str, Any],
+) -> None:
+    """Regression from a real pipeline failure, and the compile could not see it.
+
+    KFP does not ship the module. It extracts each function's source into a
+    standalone `ephemeral_component.py` and re-evaluates the `def` — annotations
+    included — with only `from kfp.dsl import *` and `from typing import *` in
+    scope.
+
+    `preflight` was annotated `-> Preflight`, a module-level
+    `class Preflight(NamedTuple)`. It compiled cleanly, because compilation
+    introspects the *original* module where that class exists, and then died at
+    task startup with `NameError: name 'Preflight' is not defined`. The
+    functional `NamedTuple("Preflight", [...])` form works because `NamedTuple`
+    comes from `typing`.
+
+    Executing the embedded source in the same namespace is the only offline check
+    for this: it exercises the def statement KFP will actually run.
+    """
+    import typing
+
+    import kfp
+    from kfp import dsl as kfp_dsl
+
+    executors = spec["deploymentSpec"]["executors"]
+    for name, executor in executors.items():
+        source = executor["container"]["command"][-1]
+        # Exactly what KFP's generated preamble provides, by name.
+        namespace: dict[str, Any] = {"kfp": kfp, "dsl": kfp_dsl}
+        namespace.update({k: getattr(kfp_dsl, k) for k in dir(kfp_dsl) if not k.startswith("_")})
+        namespace.update({k: getattr(typing, k) for k in dir(typing) if not k.startswith("_")})
+        # Only the def statements matter; the executor preamble needs argv.
+        body = source.split("\ndef ", 1)
+        assert len(body) == 2, f"{name}: no function found in the embedded source"
+        definition = "def " + body[1].split("\n\ndef main(")[0]
+        try:
+            # dont_inherit=True is load-bearing. compile() otherwise inherits the
+            # __future__ flags of *this* module, and this file opens with
+            # `from __future__ import annotations` — so the def would get PEP 563
+            # lazy annotations, never evaluate them, and this test would pass
+            # whatever the annotation referenced. It did exactly that at first.
+            exec(compile(definition, f"<{name}>", "exec", dont_inherit=True), namespace)  # noqa: S102
+        except NameError as exc:
+            pytest.fail(f"{name} references {exc}, which KFP does not provide at runtime")

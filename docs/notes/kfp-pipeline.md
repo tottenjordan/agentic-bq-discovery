@@ -150,3 +150,68 @@ the extracted def with PEP 563 lazy annotations — they became strings, were ne
 evaluated, and the test passed no matter what the annotation referenced. The
 identical code raised `NameError` when run as a standalone script, which is what
 eventually gave it away.
+
+## A task's image *can* be a runtime value — `set_container_image`
+
+`base_image` on `@dsl.component` is compile-time only, and so is
+`ContainerSpec(image=...)` inside a `@dsl.container_component` — the latter
+rejects a channel with an unhelpful `TypeError: bad argument type for built-in
+operation`. That is easy to over-generalise into "a task's image is fixed at
+compile time". **It is not.**
+
+`PipelineTask.set_container_image()` takes a static string *or* a
+`PipelineChannel`, and its own docstring is explicit: *"Unlike `base_image`, this
+method supports dynamic values such as Pipeline Parameters or outputs from
+previous tasks, which are resolved at runtime."*
+
+From an upstream task's output:
+
+```python
+built = build_report_image(tag=tag)  # e.g. triggers Cloud Build, returns a ref
+task = shard(i=1)
+task.set_container_image(built.output)
+```
+
+compiles to a genuine runtime placeholder:
+
+```
+exec-shard  image={{$.inputs.parameters['pipelinechannel--build-report-image-Output']}}
+```
+
+### The catch, and the way around it
+
+Passing an **upstream output** makes the consuming task *depend* on the producer.
+An `ExitHandler` exit task cannot depend on anything, so this fails on `finalize`
+specifically:
+
+```
+finalize_().set_container_image(built.output)
+  → ValueError: finalize does not exist.
+```
+
+A **pipeline parameter** creates no dependency, so it works even there:
+
+```python
+def pipeline(report_image: str = DEFAULT):
+    fin = finalize_()
+    fin.set_container_image(report_image)
+```
+
+```
+exec-finalize  image={{$.inputs.parameters['pipelinechannel--report_image']}}
+```
+
+That is submit-time image selection without recompiling — strictly more flexible
+than reading the reference from an environment variable at compile time.
+
+### Why we do not use it
+
+The one candidate was PaperBanana in `finalize`. A cold `uv pip install
+paperbanana` measures **3.35s** (237 MB, 51 packages), and a dynamic image still
+requires building and pushing one — the technique removes the *recompile*, not
+the *build*. Three seconds does not justify a second Dockerfile, a Cloud Build
+config and a registry artifact to keep in step with the runner.
+
+It would earn its place if the extra were genuinely heavy (a CUDA base, a large
+model), if the environment blocked PyPI egress (VPC-SC), or if per-run pinned
+environments were a requirement. None holds today.

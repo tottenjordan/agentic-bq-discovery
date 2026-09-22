@@ -243,9 +243,8 @@ def test_figures_are_off_by_default() -> None:
 def test_requesting_figures_installs_the_extra_then_renders() -> None:
     """The extra is installed at runtime rather than shipped in the image.
 
-    A second image was tried and deleted: a task's image is fixed at compile time
-    so it cannot be handed over by an earlier step, and a cold install measures
-    ~3s against minutes to build and push one.
+    A second image was tried and deleted on cost: a cold install measures ~3s,
+    and a dynamic image would still have to be built and pushed.
     """
     argv = _all_invocations("finalize", refresh_figures=True)
     install = next(a for a in argv if a[:3] == ["uv", "pip", "install"])

@@ -385,7 +385,10 @@ Add a test asserting the intended setting for every task, so a future change is 
 > image (`Dockerfile.report`, a Cloud Build config, a `REPORT_IMAGE` env var) for
 > `finalize`. That was built, then deleted. Two things settled it:
 >
-> - **A task's image is fixed at compile time.** `ContainerSpec.image` rejects a
+> - **[Later correction: this claim was too strong.** `PipelineTask.set_container_image()`
+>   *does* accept a runtime value, so an image can be chosen per run. The second
+>   image was still dropped, but on cost — see docs/notes/kfp-pipeline.md.**]**
+> - ~~A task's image is fixed at compile time.~~ `ContainerSpec.image` rejects a
 >   `PipelineChannel` from an upstream task *or* a pipeline parameter, so a
 >   report image could never be built by an earlier pipeline step and handed to
 >   `finalize` — it had to be built and pushed out of band.

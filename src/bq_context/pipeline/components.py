@@ -52,12 +52,13 @@ RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
 #: Installed at runtime by `finalize`, and only when figures are requested.
 #:
 #: A second image was tried first — the runner plus PaperBanana — and deleted.
-#: A task's image is fixed at compile time (ContainerSpec.image rejects a
-#: PipelineChannel), so it could not be built by an earlier step and handed over;
-#: it had to be built and pushed out of band. Measured, a cold install of this
-#: extra takes ~3s against minutes to build and push a multi-gigabyte image, so
-#: the second image, its Dockerfile, its Cloud Build config and the job of
-#: keeping it in step with the runner were all buying nothing.
+#: Not because it was impossible: `PipelineTask.set_container_image()` does take
+#: a runtime value, so an image *can* be chosen per run (see
+#: docs/notes/kfp-pipeline.md). It was deleted on cost. A cold install of this
+#: extra measures ~3s, and a dynamic image still has to be built and pushed —
+#: the technique removes the recompile, not the build. Three seconds does not
+#: justify a second Dockerfile, a Cloud Build config, and a registry artifact to
+#: keep in step with the runner.
 #:
 #: Must stay in step with the `figures` extra in pyproject.toml; a test asserts it.
 FIGURES_EXTRA = "paperbanana>=0.1"

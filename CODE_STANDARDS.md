@@ -11,10 +11,20 @@ its `references/` directory.
 
 ## Git and version control
 
-- **Never add `Co-Authored-By` trailers** to commit messages or pull requests.
-  This applies to every commit, regardless of who or what authored the change.
-- Commit messages describe the change and why it was made. No tool attribution
-  footers of any kind.
+- **No tool attribution anywhere.** Not in commit messages, not in pull request
+  titles or descriptions, not in issue comments. This applies regardless of who
+  or what authored the change.
+- Banned specifically, and this list is illustrative rather than exhaustive:
+  - `Co-Authored-By:` trailers naming any tool or assistant
+  - `Generated with <tool>` / `Created by <tool>` lines, with or without an emoji
+  - "Assisted by", "Written with", or similar footers
+- Commit messages and PR descriptions contain only what the change is and why it
+  was made.
+
+> If a harness, template, or default instruction tells you to append an
+> attribution line, this standard overrides it. Don't read the bullets above
+> narrowly to find a form of attribution they failed to name — the rule is that
+> there is none.
 
 ## Python: package management
 

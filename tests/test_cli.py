@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
-from bq_context.cli import app
+from bq_context.cli import app, assess_ladder
 from bq_context.runner.cells import APPROACHES
 from bq_context.runner.models import Cell, ShardSpec
 from bq_context.runner.resume import shard_prefix
@@ -354,3 +354,72 @@ def test_run_shard_rejects_an_out_of_range_tier(questions_file: Path, tmp_path: 
         ],
     )
     assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# preflight ladder assessment
+# ---------------------------------------------------------------------------
+def rung(tier: int, size: int, profiled: int = 15, aspects: list[str] | None = None) -> dict:
+    return {
+        "tier": tier,
+        "tables": 15,
+        "bytes": size,
+        "profiled": profiled,
+        "aspects": aspects or [],
+    }
+
+
+def test_a_healthy_ladder_has_no_complaints() -> None:
+    ladder = [
+        rung(0, 49_000, profiled=0),
+        rung(1, 118_000),
+        rung(2, 130_000, aspects=["related_terms"]),
+        rung(3, 140_000, aspects=["guidelines", "related_terms"]),
+    ]
+    problems, warnings = assess_ladder(ladder, empty=False)
+    assert problems == []
+    assert warnings == []
+
+
+def test_a_flat_rung_is_warned_about_even_when_the_ladder_climbs_overall() -> None:
+    """The failure this gate exists for, and the one it originally missed.
+
+    Observed live on 2026-09-22: glossary entry links are created successfully
+    but never surface in the context capsule, so tier 2 is byte-for-byte
+    equivalent to tier 1 while the factorial still treats them as distinct
+    levels. Endpoint-only checks pass this happily.
+    """
+    ladder = [
+        rung(0, 49_089, profiled=0),
+        rung(1, 118_275),
+        rung(2, 119_882),  # glossary never lands
+        rung(3, 122_346, aspects=["overview"]),
+    ]
+    problems, warnings = assess_ladder(ladder, empty=False)
+
+    assert problems == [], "the ladder does climb overall, so this is not fatal"
+    assert len(warnings) == 1
+    assert "tier 2 adds nothing over tier 1" in warnings[0]
+
+
+def test_an_empty_cache_is_fatal_and_names_the_likely_cause() -> None:
+    problems, _ = assess_ladder([rung(0, 0, profiled=0), rung(3, 0, profiled=0)], empty=True)
+    assert any("EMPTY" in p and "catalogViewer" in p for p in problems)
+
+
+def test_a_non_climbing_ladder_is_fatal() -> None:
+    problems, _ = assess_ladder([rung(0, 50_000), rung(3, 50_000)], empty=False)
+    assert any("not larger" in p for p in problems)
+
+
+def test_a_rung_that_only_gains_metadata_bytes_still_warns() -> None:
+    """Timestamps and entry ids differ between datasets; that is not enrichment."""
+    _, warnings = assess_ladder([rung(1, 118_000), rung(2, 118_900)], empty=False)
+    assert len(warnings) == 1
+
+
+def test_a_rung_gaining_a_new_aspect_is_not_flat() -> None:
+    _, warnings = assess_ladder(
+        [rung(2, 118_000), rung(3, 118_500, aspects=["overview"])], empty=False
+    )
+    assert warnings == []

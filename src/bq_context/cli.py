@@ -16,13 +16,14 @@ a pipeline failure can always be reproduced locally with one command.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import subprocess
 import sys
 from importlib.metadata import version as pkg_version
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
@@ -30,6 +31,9 @@ from bq_context.config import TIERS, ExperimentConfig
 from bq_context.runner.cells import APPROACHES
 from bq_context.runner.models import ShardSpec
 from bq_context.runner.store import store_for
+
+if TYPE_CHECKING:
+    from bq_context.context_cache import TableCache
 
 app = typer.Typer(
     name="bq-context",
@@ -51,7 +55,14 @@ ExperimentId = Annotated[
     ),
 ]
 OutOpt = Annotated[str, typer.Option("--out", help="gs://bucket/prefix or a local directory.")]
+# NB: an Annotated alias carries its flag name, so reusing TierOpt for a second
+# parameter silently binds both to --tier. Any other tier-valued option needs
+# its own alias; see BaselineOpt.
 TierOpt = Annotated[int, typer.Option("--tier", "-t", min=0, max=3)]
+BaselineOpt = Annotated[
+    int,
+    typer.Option("--baseline", min=0, max=3, help="Tier to compare enrichment against."),
+]
 QuestionsOpt = Annotated[Path, typer.Option("--questions", help="Path to questions.json.")]
 
 
@@ -109,6 +120,74 @@ def _code_version() -> str:
     except (subprocess.SubprocessError, OSError):
         return "unknown"
     return out.stdout.strip() or "unknown"
+
+
+#: Below this, a tier's extra bytes are timestamps and ids rather than content.
+_FLAT_RUNG_BYTES = 4096
+
+
+def _tier_profile(tier: int, cache: TableCache) -> dict[str, Any]:
+    """Summarise what enrichment actually reached one tier's capsules.
+
+    Byte count alone is not enough to tell tiers apart: metadata timestamps and
+    entry ids differ between datasets, so two functionally identical tiers can
+    still differ by a kilobyte or two. The aspect keys and the profiled-table
+    count are what actually distinguish them.
+    """
+    aspects: set[str] = set()
+    profiled = 0
+    for entry in cache.entries.values():
+        capsule = json.loads(entry.detailed)
+        if any("dataProfile" in column for column in capsule.get("schema", [])):
+            profiled += 1
+        for key in ("guidelines", "overview", "related_terms", "business_descriptions"):
+            if key in capsule:
+                aspects.add(key)
+    return {
+        "tier": tier,
+        "tables": len(cache.entries),
+        "bytes": len(cache.all_detailed()),
+        "profiled": profiled,
+        "aspects": sorted(aspects),
+    }
+
+
+def assess_ladder(ladder: list[dict[str, Any]], *, empty: bool) -> tuple[list[str], list[str]]:
+    """Judge an enrichment ladder. Returns (fatal problems, warnings).
+
+    Checks every rung, not just the endpoints. A ladder can gain a lot overall
+    while one step contributes nothing — and that step is then a factor level
+    silently measuring the level below it, which is worse than a missing tier
+    because the factorial still reports the two as distinct.
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+    top, bottom = ladder[-1], ladder[0]
+
+    if empty:
+        problems.append(
+            f"tier {top['tier']} context cache is EMPTY. lookupContext returns an "
+            "empty response rather than 403 when permissions are missing, so check "
+            "roles/dataplex.catalogViewer before assuming the tier is empty."
+        )
+    if top["bytes"] <= bottom["bytes"]:
+        problems.append(
+            f"tier {top['tier']} context ({top['bytes']:,} bytes) is not larger "
+            f"than tier {bottom['tier']} ({bottom['bytes']:,} bytes). Enrichment is "
+            "not reaching the capsule, so any tier comparison would measure nothing."
+        )
+
+    for lower, upper in itertools.pairwise(ladder):
+        gained = upper["bytes"] - lower["bytes"]
+        same_shape = upper["aspects"] == lower["aspects"] and upper["profiled"] == lower["profiled"]
+        if same_shape and gained < _FLAT_RUNG_BYTES:
+            warnings.append(
+                f"tier {upper['tier']} adds nothing over tier {lower['tier']} "
+                f"(+{gained:,} bytes, identical aspects). That tier is not a "
+                "distinct factor level; treat its results as a duplicate of "
+                f"tier {lower['tier']}."
+            )
+    return problems, warnings
 
 
 def _selected(approaches: list[str] | None, tiers: list[int] | None) -> tuple[list[str], list[int]]:
@@ -251,7 +330,7 @@ def cleanup(
 
 
 @app.command()
-def preflight(tier: TierOpt = 3, baseline: TierOpt = 0) -> None:
+def preflight(tier: TierOpt = 3, baseline: BaselineOpt = 0) -> None:
     """Assert catalog enrichment is real before any measurement runs.
 
     This is the most important gate in the system. ``lookupContext`` returns an
@@ -271,15 +350,14 @@ def preflight(tier: TierOpt = 3, baseline: TierOpt = 0) -> None:
         tier_scope,
     )
 
-    sizes: dict[int, int] = {}
     caches: dict[int, TableCache] = {}
-    for check_tier in (baseline, tier):
+    for check_tier in sorted({baseline, *range(baseline, tier + 1), tier}):
         bootstrap = TierContext.build(config, check_tier, TableCache.empty())
         with tier_scope(bootstrap):
             datasets = get_datasets()
             try:
                 scoped = {ds: get_scoped_tables(ds) for ds in datasets}
-                cache = TableCache.build(config, datasets, scoped)
+                caches[check_tier] = TableCache.build(config, datasets, scoped)
             except NotFound:
                 # The usual cause is simply that ensure-infra has not run. Say
                 # so, rather than surfacing a BigQuery stack trace for what is
@@ -291,34 +369,27 @@ def preflight(tier: TierOpt = 3, baseline: TierOpt = 0) -> None:
                     err=True,
                 )
                 raise typer.Exit(1) from None
-        caches[check_tier] = cache
-        sizes[check_tier] = len(cache.all_detailed())
+
+    ladder = [_tier_profile(t, caches[t]) for t in sorted(caches)]
+    typer.echo(f"{'tier':<6}{'tables':>7}{'bytes':>10}{'profiled':>10}  aspects")
+    for rung in ladder:
         typer.echo(
-            f"tier {check_tier}: {len(cache)} table(s), {sizes[check_tier]:,} bytes of context"
+            f"{rung['tier']:<6}{rung['tables']:>7}{rung['bytes']:>10,}"
+            f"{rung['profiled']:>10}  {','.join(rung['aspects']) or '—'}"
         )
 
-    problems: list[str] = []
-    if len(caches[tier]) == 0:
-        problems.append(
-            f"tier {tier} context cache is EMPTY. lookupContext returns an empty "
-            "response rather than 403 when permissions are missing, so check "
-            "roles/dataplex.catalogViewer before assuming the tier is empty."
-        )
-    if sizes[tier] <= sizes[baseline]:
-        problems.append(
-            f"tier {tier} context ({sizes[tier]:,} bytes) is not larger than tier "
-            f"{baseline} ({sizes[baseline]:,} bytes). Enrichment is not reaching "
-            "the capsule, so any tier comparison would measure nothing."
-        )
+    problems, warnings = assess_ladder(ladder, empty=len(caches[tier]) == 0)
 
+    for warning in warnings:
+        typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)
     if problems:
-        typer.echo("")
         for problem in problems:
             typer.secho(f"FAIL  {problem}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
+
+    gained = ladder[-1]["bytes"] - ladder[0]["bytes"]
     typer.secho(
-        f"\nOK — tier {tier} carries {sizes[tier] - sizes[baseline]:,} bytes more "
-        f"context than tier {baseline}.",
+        f"\nOK — tier {tier} carries {gained:,} bytes more context than tier {baseline}.",
         fg=typer.colors.GREEN,
     )
 

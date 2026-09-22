@@ -33,6 +33,9 @@ notes.
 - [Dataplex / Knowledge Catalog gotchas](gcp/dataplex-catalog-gotchas.md) — `lookupContext`
   returns **empty rather than 403** on missing permissions; parentheses silently break search
   scoping; the three different locations catalog resources must live in; quotas.
+- [Provisioning the four-tier corpus](gcp/corpus-provisioning.md) — what `ensure-infra` built and
+  how long it took, and the finding that **tier 2 is not a distinct factor level**: glossary entry
+  links are created correctly but never reach the capsule the agents read.
 
 ### Tooling
 

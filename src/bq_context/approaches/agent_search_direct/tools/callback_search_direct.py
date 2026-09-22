@@ -23,6 +23,9 @@ from bq_context.discovery_common import emit, get_question, search_entries_scope
 from bq_context.schemas import RankedTable, RerankerResponse
 
 LABEL = "Approach 6: Search Direct"
+# Derived, not hardcoded at each use: cells.py reads state keys built from the
+# approach name, so a typo in any one of the three below is a silently empty cell.
+METHOD = "search_direct"
 
 
 def _response_from_search_order(question: str, ordered_ids: list[str]) -> RerankerResponse:
@@ -68,9 +71,9 @@ async def search_direct(callback_context: CallbackContext):
     hits, search_stats = await asyncio.to_thread(search_entries_scoped, question)
     ordered_ids = [hit.table_id for hit in hits]
 
-    callback_context.state["nominated_tables_search_direct"] = ordered_ids
-    callback_context.state["search_stats_search_direct"] = search_stats
+    callback_context.state[f"nominated_tables_{METHOD}"] = ordered_ids
+    callback_context.state[f"search_stats_{METHOD}"] = search_stats
 
     result = _response_from_search_order(question, ordered_ids)
-    callback_context.state["reranker_result_search_direct"] = result.model_dump_json()
+    callback_context.state[f"reranker_result_{METHOD}"] = result.model_dump_json()
     return emit(LABEL, result)

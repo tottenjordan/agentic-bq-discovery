@@ -80,8 +80,8 @@ async def discover_and_rerank(callback_context: CallbackContext):
 
     metadata, nominated_ids, search_stats = await asyncio.to_thread(_search_and_lookup, question)
 
-    callback_context.state["nominated_tables_kc_search"] = nominated_ids
-    callback_context.state["search_stats_kc_search"] = search_stats
+    callback_context.state[f"nominated_tables_{METHOD}"] = nominated_ids
+    callback_context.state[f"search_stats_{METHOD}"] = search_stats
 
     if not metadata:
         store_empty(

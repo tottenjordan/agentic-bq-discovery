@@ -16,6 +16,7 @@ from bq_context.discovery_common import (
     rerank_and_store,
     store_empty,
 )
+from bq_context.context_cache import is_empty_payload
 from bq_context.runtime import current_tier
 
 LABEL = "Approach 3: Knowledge Catalog Context"
@@ -29,9 +30,9 @@ async def discover_and_rerank(callback_context: CallbackContext):
         return None  # No question — fall back to LLM + tools
 
     context = current_tier().cache.all_detailed()
-    callback_context.state["nominated_tables_kc_context"] = current_tier().cache.table_ids()
+    callback_context.state[f"nominated_tables_{METHOD}"] = current_tier().cache.table_ids()
 
-    if not context:
+    if is_empty_payload(context):
         store_empty(callback_context, METHOD, question, "No knowledge context available.")
         return plain_content(LABEL, "No knowledge context available for tables in scope.")
 

@@ -4,6 +4,6 @@ Unlike upstream, nothing here populates at import time. A ``TableCache`` is buil
 explicitly by the shard runner and owned by a ``TierContext``.
 """
 
-from .cache import TableCache, TableContext
+from .cache import TableCache, TableContext, is_empty_payload
 
-__all__ = ["TableCache", "TableContext"]
+__all__ = ["TableCache", "TableContext", "is_empty_payload"]

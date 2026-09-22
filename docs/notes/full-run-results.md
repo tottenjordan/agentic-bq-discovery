@@ -132,6 +132,31 @@ Both the CLI `plan-shards` and the KFP `plan_shards` component call
 `order_shards`; `ParallelFor` dispatches in list order, so the component's
 ordering is the one that actually matters.
 
+## A wasted-rerank bug, found later by testing
+
+`all_briefs`, `all_detailed` and `detailed_for` return a JSON **array string**,
+so an empty result is `"[]"` — which is **truthy**. Three callbacks guarded with
+`if not payload:`, which therefore never fired.
+
+Measured across full-01:
+
+| approach | zero-result cells | skipped rerank | **wasted rerank calls** | tokens |
+|---|---|---|---|---|
+| `semantic_context` | 45 | **0** | **45** | 210,905 |
+| `kc_search` | 44 | 15 | 29 | 127,449 |
+| `kc_context` | 0 | — | — | — |
+
+`kc_search` guards on a plain string from `_search_and_lookup` and skipped
+correctly; `semantic_context` guards on a cache payload and never did. **The two
+differ only in how they fetch metadata**, so this made `semantic_context` look
+more expensive for a reason unrelated to its design — a real distortion of the
+cost comparison, though not of recall.
+
+Fixed with `context_cache.is_empty_payload`, which lives beside the functions
+producing the value so the knowledge is in one place. Found by writing callback
+tests, not by reading the results: the cells scored correctly, they just burned
+a Gemini call each.
+
 ## Provenance and caveats from the resume
 
 **The dataset is built from two code versions.** 2,993 cells were produced by

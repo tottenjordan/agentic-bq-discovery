@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from google.auth.credentials import Credentials
 
     from bq_context.context_cache import TableCache
+    from bq_context.runner.store import ArtifactStore
 
 app = typer.Typer(
     name="bq-context",
@@ -768,6 +769,13 @@ def merge(
     approach: Annotated[list[str] | None, typer.Option("--approach", "-a")] = None,
     tier: Annotated[list[int] | None, typer.Option("--tier", "-t")] = None,
     limit: Annotated[int, typer.Option("--limit", min=0)] = 0,
+    bigquery: Annotated[
+        bool,
+        typer.Option(
+            "--bigquery/--no-bigquery",
+            help="Also load results into the BigQuery query sink.",
+        ),
+    ] = True,
 ) -> None:
     """Collect shard output into one deduped results file.
 
@@ -793,7 +801,8 @@ def merge(
         ).planned_cells()
     ]
 
-    result = merge_experiment(store_for(out), experiment_id, expected)
+    store = store_for(out)
+    result = merge_experiment(store, experiment_id, expected)
     typer.echo(
         f"{result.ok_cells}/{result.expected} cells from {result.shards_seen} shard(s); "
         f"{result.error_cells} error, {len(result.missing)} missing"
@@ -801,6 +810,30 @@ def merge(
     if result.missing:
         preview = ", ".join(result.missing[:5])
         typer.secho(f"missing (first 5): {preview}", fg=typer.colors.YELLOW, err=True)
+
+    if bigquery and out.startswith("gs://"):
+        _publish_to_bigquery(experiment_id, store)
+
+
+def _publish_to_bigquery(experiment_id: str, store: ArtifactStore) -> None:
+    """Load merged results into the query sink.
+
+    Never fatal. The merged JSONL is the system of record and is already
+    written by the time we get here, so a BigQuery outage or a missing grant
+    must not turn a good sweep into a failed one — re-running `merge` reloads.
+    """
+    from bq_context.scoring import sink  # noqa: PLC0415
+    from bq_context.scoring.merge import load_merged  # noqa: PLC0415
+
+    try:
+        records = load_merged(store, experiment_id)
+        loaded = sink.load_experiment(_config(), experiment_id, records)
+    except Exception as exc:  # noqa: BLE001 - the sink is a convenience, not the record
+        typer.secho(
+            f"BigQuery sink skipped: {type(exc).__name__}: {exc}", fg=typer.colors.YELLOW, err=True
+        )
+        return
+    typer.echo(f"BigQuery          {loaded:,} rows -> {sink.table_id(_config())}")
 
 
 @app.command()

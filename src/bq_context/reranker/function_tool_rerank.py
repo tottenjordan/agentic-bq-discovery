@@ -9,7 +9,7 @@ import asyncio
 
 from google.adk import tools
 
-from bq_context.config import TOP_K
+from bq_context.runtime import current_tier
 
 from .util_rerank import call_reranker
 
@@ -40,14 +40,19 @@ async def rerank_tables(
         A JSON string containing the ranked tables with confidence scores,
         reasoning, column hints, and SQL suggestions.
     """
-    top_k = tool_context.state.get("top_k", TOP_K)
+    config = current_tier().config
+    top_k = tool_context.state.get("top_k", config.top_k)
 
     # Store nominations in state for the orchestrator to compare
     tool_context.state[f"nominated_tables_{discovery_method}"] = table_ids
 
-    # Run in thread pool so parallel agents don't block the event loop
+    # Run in thread pool so parallel agents don't block the event loop.
+    # asyncio.to_thread copies the current contextvars.Context into the worker,
+    # so the usage_scope() opened by the cell runner is visible to the reranker's
+    # record_usage_response call. Token accounting depends on that.
     result = await asyncio.to_thread(
         call_reranker,
+        config=config,
         question=question,
         candidate_metadata=candidate_metadata,
         discovery_method=discovery_method,

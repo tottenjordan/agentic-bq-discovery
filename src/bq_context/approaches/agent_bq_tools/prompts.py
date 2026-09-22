@@ -2,10 +2,10 @@
 
 import datetime
 
-from bq_context.config import GOOGLE_CLOUD_PROJECT, get_datasets, get_scoped_tables
+from bq_context.runtime import default_config, get_datasets, get_scoped_tables
 
 today_date = datetime.date.today().strftime("%A, %B %d, %Y")
-project_id = GOOGLE_CLOUD_PROJECT
+project_id = default_config().project
 
 
 def _scope_summary() -> str:

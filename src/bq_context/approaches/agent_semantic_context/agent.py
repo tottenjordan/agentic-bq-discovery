@@ -11,14 +11,14 @@ with a single cache lookup (zero additional API calls after the initial search).
 
 from google.adk import agents
 
-from bq_context.config import AGENT_MODEL
+from bq_context.runtime import default_config
 
 from . import prompts
 from .tools import discover_and_rerank
 
 root_agent = agents.Agent(
     name="agent_semantic_context",
-    model=AGENT_MODEL,
+    model=default_config().agent_model,
     description=(
         "Discovers relevant BigQuery tables using Knowledge Catalog semantic "
         "search to narrow candidates, then enriches matches with cached "

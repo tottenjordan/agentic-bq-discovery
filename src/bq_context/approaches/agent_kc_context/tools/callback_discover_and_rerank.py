@@ -9,7 +9,6 @@ in ``discovery_common``.
 
 from google.adk.agents.callback_context import CallbackContext
 
-from bq_context.context_cache import get_all_detailed, get_table_ids
 from bq_context.discovery_common import (
     emit,
     get_question,
@@ -17,6 +16,7 @@ from bq_context.discovery_common import (
     rerank_and_store,
     store_empty,
 )
+from bq_context.runtime import current_tier
 
 LABEL = "Approach 3: Knowledge Catalog Context"
 METHOD = "kc_context"
@@ -28,8 +28,8 @@ async def discover_and_rerank(callback_context: CallbackContext):
     if not question:
         return None  # No question — fall back to LLM + tools
 
-    context = get_all_detailed()
-    callback_context.state["nominated_tables_kc_context"] = get_table_ids()
+    context = current_tier().cache.all_detailed()
+    callback_context.state["nominated_tables_kc_context"] = current_tier().cache.table_ids()
 
     if not context:
         store_empty(callback_context, METHOD, question, "No knowledge context available.")

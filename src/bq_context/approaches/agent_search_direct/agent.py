@@ -13,14 +13,14 @@ Knowledge Catalog is the product formerly called Dataplex Universal Catalog
 
 from google.adk import agents
 
-from bq_context.config import AGENT_MODEL
+from bq_context.runtime import default_config
 
 from . import prompts
 from .tools import search_direct
 
 root_agent = agents.Agent(
     name="agent_search_direct",
-    model=AGENT_MODEL,
+    model=default_config().agent_model,
     description=(
         "Discovers relevant BigQuery tables using Knowledge Catalog semantic "
         "search and uses the search's own relevance order as the final ranking, "

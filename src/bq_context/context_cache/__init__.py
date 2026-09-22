@@ -1,20 +1,9 @@
-"""Shared context cache — brief and detailed table metadata for all in-scope tables.
+"""Per-tier table metadata cache, built from Knowledge Catalog context capsules.
 
-Auto-populated at module import time.  Used by approaches 3, 4, and 5.
+Unlike upstream, nothing here populates at import time. A ``TableCache`` is built
+explicitly by the shard runner and owned by a ``TierContext``.
 """
 
-from .cache import (
-    get_all_briefs,
-    get_all_detailed,
-    get_detailed_for_tables,
-    get_table_ids,
-    repopulate_for_tier,
-)
+from .cache import TableCache, TableContext
 
-__all__ = [
-    "get_all_briefs",
-    "get_all_detailed",
-    "get_detailed_for_tables",
-    "get_table_ids",
-    "repopulate_for_tier",
-]
+__all__ = ["TableCache", "TableContext"]

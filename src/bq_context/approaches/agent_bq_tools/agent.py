@@ -8,7 +8,7 @@ plus the shared reranker tool.
 from google.adk import agents
 from google.adk.tools import bigquery as bq_tools
 
-from bq_context.config import AGENT_MODEL, GOOGLE_CLOUD_PROJECT
+from bq_context.runtime import default_config
 from bq_context.reranker import TOOLS as RERANKER_TOOLS
 
 from . import prompts
@@ -18,7 +18,7 @@ from .callback_filter_scope import filter_scope
 bq_toolset = bq_tools.BigQueryToolset(
     bigquery_tool_config=bq_tools.config.BigQueryToolConfig(
         write_mode=bq_tools.config.WriteMode.BLOCKED,
-        compute_project_id=GOOGLE_CLOUD_PROJECT,
+        compute_project_id=default_config().project,
     ),
     tool_filter=[
         "list_dataset_ids",
@@ -30,7 +30,7 @@ bq_toolset = bq_tools.BigQueryToolset(
 
 root_agent = agents.Agent(
     name="agent_bq_tools",
-    model=AGENT_MODEL,
+    model=default_config().agent_model,
     description=(
         "Discovers relevant BigQuery tables by enumerating dataset and table "
         "metadata using the ADK BigQuery built-in tools, then reranks results."

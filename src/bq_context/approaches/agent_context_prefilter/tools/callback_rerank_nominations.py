@@ -9,8 +9,8 @@ returns no Content so the LLM's own response stands as the agent output.
 
 from google.adk.agents.callback_context import CallbackContext
 
-from bq_context.context_cache import get_detailed_for_tables
 from bq_context.discovery_common import get_question, rerank_and_store, store_empty
+from bq_context.runtime import current_tier
 
 METHOD = "context_prefilter"
 
@@ -30,7 +30,7 @@ async def rerank_nominations(callback_context: CallbackContext):
         )
         return None
 
-    detailed = get_detailed_for_tables(nominated)
+    detailed = current_tier().cache.detailed_for(nominated)
     if not detailed:
         store_empty(
             callback_context, METHOD, question, "Nominated tables had no cached detailed context."

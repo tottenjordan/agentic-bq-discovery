@@ -8,7 +8,7 @@ and removes any entries not defined in ``config.SCOPE``.
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
-from bq_context.config import get_datasets, get_scoped_tables
+from bq_context.runtime import get_datasets, get_scoped_tables
 
 
 def filter_scope(

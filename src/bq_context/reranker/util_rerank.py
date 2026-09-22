@@ -6,8 +6,13 @@ import re
 from google import genai
 from google.genai import types
 
-from bq_context.config import GOOGLE_CLOUD_PROJECT, TOOL_MODEL, TOOL_MODEL_LOCATION
+from bq_context.config import ExperimentConfig
 from bq_context.schemas import RerankerResponse
+from bq_context.usage import record_usage_response
+
+
+class RerankerEmptyResponseError(RuntimeError):
+    """Gemini returned a response with no text (safety block, truncation, ...)."""
 
 
 def _normalize_table_id(raw_id: str) -> str:
@@ -66,67 +71,36 @@ For sql_hints, provide concrete SQL guidance like:
 """
 
 
-_genai_client = None
+# Token accounting for these calls lives in ``bq_context.usage`` as a
+# ContextVar. ``call_reranker`` invokes Gemini directly rather than as an ADK
+# tool, so its ``usage_metadata`` never reaches the ADK event stream and has to
+# be collected on the side. Upstream used a module-level list, which was exact
+# only because runs were strictly sequential.
+
+_CLIENTS: dict[tuple[str, str], genai.Client] = {}
 
 
-# ---------------------------------------------------------------------------
-# Reranker token-usage accounting (exact, for the benchmark cost metric).
-#
-# ``call_reranker`` invokes Gemini directly (not as an ADK tool), so its
-# ``usage_metadata`` never reaches the ADK event stream. We record it here in a
-# process-local accumulator the benchmark harness resets before each isolated
-# approach-run and reads afterwards. Runs are sequential (one approach at a
-# time), so a plain module global is sufficient and exact.
-# ---------------------------------------------------------------------------
-_USAGE_LOG: list[dict] = []
+def _get_client(config: ExperimentConfig) -> genai.Client:
+    """Return a genai client for this project/location, cached per pair.
 
-
-def reset_usage() -> None:
-    """Clear the reranker usage accumulator (call before an isolated run)."""
-    _USAGE_LOG.clear()
-
-
-def get_usage() -> dict:
-    """Return aggregated reranker token usage since the last ``reset_usage``.
-
-    Returns a dict with ``prompt_tokens``, ``output_tokens``, ``total_tokens``,
-    and ``calls`` (number of reranker Gemini invocations).
+    Keyed rather than a single global so two configs in one process (tests, or a
+    future multi-project run) cannot silently share a client pointed at the
+    wrong endpoint.
     """
-    return {
-        "prompt_tokens": sum(u["prompt_tokens"] for u in _USAGE_LOG),
-        "output_tokens": sum(u["output_tokens"] for u in _USAGE_LOG),
-        "total_tokens": sum(u["total_tokens"] for u in _USAGE_LOG),
-        "calls": len(_USAGE_LOG),
-    }
-
-
-def _record_usage(response) -> None:
-    """Append one Gemini response's token usage to the accumulator."""
-    usage = getattr(response, "usage_metadata", None)
-    if usage is None:
-        return
-    _USAGE_LOG.append(
-        {
-            "prompt_tokens": getattr(usage, "prompt_token_count", 0) or 0,
-            "output_tokens": getattr(usage, "candidates_token_count", 0) or 0,
-            "total_tokens": getattr(usage, "total_token_count", 0) or 0,
-        }
-    )
-
-
-def _get_client() -> genai.Client:
-    """Return a cached genai Client."""
-    global _genai_client
-    if _genai_client is None:
-        _genai_client = genai.Client(
+    key = (config.project, config.locations.gemini)
+    client = _CLIENTS.get(key)
+    if client is None:
+        client = genai.Client(
             vertexai=True,
-            project=GOOGLE_CLOUD_PROJECT,
-            location=TOOL_MODEL_LOCATION or "us-central1",
+            project=config.project,
+            location=config.locations.gemini,
         )
-    return _genai_client
+        _CLIENTS[key] = client
+    return client
 
 
 def call_reranker(
+    config: ExperimentConfig,
     question: str,
     candidate_metadata: str,
     discovery_method: str,
@@ -135,6 +109,7 @@ def call_reranker(
     """Call Gemini with structured output to rank candidate tables.
 
     Args:
+        config: Project, location, and model settings.
         question: The user's original question.
         candidate_metadata: String containing table metadata (schemas,
             descriptions, profiles, etc.) from the discovery approach.
@@ -146,7 +121,7 @@ def call_reranker(
     Returns:
         RerankerResponse with ranked tables.
     """
-    client = _get_client()
+    client = _get_client(config)
 
     user_prompt = f"""\
 ## User Question
@@ -165,7 +140,7 @@ the question (even as a supporting join), include it.
 """
 
     response = client.models.generate_content(
-        model=TOOL_MODEL,
+        model=config.tool_model,
         contents=user_prompt,
         config=types.GenerateContentConfig(
             system_instruction=RERANKER_SYSTEM_PROMPT,
@@ -175,7 +150,24 @@ the question (even as a supporting join), include it.
         ),
     )
 
-    _record_usage(response)
+    # Recorded only for the response we keep. Any retry must wrap *this whole
+    # function* from outside, so a retried-away attempt is never counted.
+    record_usage_response(response)
+
+    # response.text is None when the model returns no candidate — a safety block
+    # or a finish_reason like MAX_TOKENS. Upstream passed it straight to
+    # json.loads, which raises `TypeError: the JSON object must be str, bytes or
+    # bytearray, not NoneType` and tells you nothing about why. Fail with the
+    # finish_reason instead, so a shard's error cell is diagnosable.
+    if response.text is None:
+        finish = "unknown"
+        if response.candidates:
+            finish = str(getattr(response.candidates[0], "finish_reason", "unknown"))
+        msg = (
+            f"Reranker returned no text for discovery_method={discovery_method!r} "
+            f"(finish_reason={finish}). Prompt feedback: {response.prompt_feedback!r}"
+        )
+        raise RerankerEmptyResponseError(msg)
 
     result = RerankerResponse.model_validate(json.loads(response.text))
 

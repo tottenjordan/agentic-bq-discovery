@@ -11,7 +11,6 @@ import asyncio
 
 from google.adk.agents.callback_context import CallbackContext
 
-from bq_context.context_cache import get_detailed_for_tables
 from bq_context.discovery_common import (
     emit,
     get_question,
@@ -20,6 +19,7 @@ from bq_context.discovery_common import (
     search_entries_scoped,
     store_empty,
 )
+from bq_context.runtime import current_tier
 
 LABEL = "Approach 5: Semantic Context"
 METHOD = "semantic_context"
@@ -32,7 +32,7 @@ def _search_and_get_cached(question: str) -> tuple[str, list[str], dict]:
     """
     hits, stats = search_entries_scoped(question)
     matched_ids = [hit.table_id for hit in hits]
-    detailed = get_detailed_for_tables(matched_ids)
+    detailed = current_tier().cache.detailed_for(matched_ids)
     return detailed, matched_ids, stats
 
 

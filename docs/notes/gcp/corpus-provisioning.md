@@ -89,10 +89,28 @@ Upstream's `_resolve_guidelines_aspect` falls back to `overview` when
 from tier 2 (+2,464 bytes, `overview` on 4 tables), so the arm is real, but it
 is testing an overview blob rather than authored NL→SQL guidance.
 
-If the intent is to test guidelines specifically, the SA needs
-`dataplex.aspectTypes.get` on the Google-published `dataplex-types` project. It
-is a cross-project read, so a project-level grant in `hybrid-vertex` will not
-cover it.
+**This is not fixable with IAM.** Verified 2026-09-22: a near-Owner account gets
+the same 403 on `guidelines` while reading `overview` from the same project in
+the same breath, and `guidelines` does not appear in
+`gcloud dataplex aspect-types list --project=dataplex-types`.
+
+```
+$ gcloud dataplex aspect-types describe guidelines --location=global --project=dataplex-types
+PERMISSION_DENIED: Permission 'dataplex.aspectTypes.get' denied
+$ gcloud dataplex aspect-types describe overview   --location=global --project=dataplex-types
+name: projects/dataplex-types/locations/global/aspectTypes/overview
+```
+
+So it is an availability restriction on that aspect type — presumably preview or
+allowlist-gated — not a permissions gap on our side. `dataplex-types` is
+Google-owned, so there is no policy to bind against anyway; the 403 text reads
+like a missing role and is not one.
+
+Treat the `overview` fallback as a property of this environment rather than a
+misconfiguration. Tier 3 therefore tests an overview blob rather than authored
+NL→SQL guidance, which is a caveat on the tier-3 arm, not a defect to repair.
+Obtaining real `guidelines` would mean asking Google for allowlist access — an
+account conversation, not a command.
 
 ## The gate was too weak, and this is why it now checks every rung
 

@@ -46,6 +46,9 @@ notes.
 
 ### Tooling
 
+- [The Vertex AI Pipeline](kfp-pipeline.md) — the topology, and three KFP constraints that cost
+  real time: PEP 563 breaks compilation, `parallelism` must be a compile-time constant, and a
+  `dsl.If` group cannot be depended on from outside.
 - [The runner container](container.md) — why `ENV PATH=/app/.venv/bin` is the whole KFP
   integration (confirmed by breaking it), two corrections to the plan, and the fact that Cloud
   Build substitutions do not nest.

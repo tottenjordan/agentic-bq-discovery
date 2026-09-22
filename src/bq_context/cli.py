@@ -46,6 +46,7 @@ app = typer.Typer(
 
 DEFAULT_QUESTIONS = Path("experiments/questions.json")
 DEFAULT_OUT = "gs://hybrid-vertex-bq-context"
+DEFAULT_SA = "bq-context-pipeline@hybrid-vertex.iam.gserviceaccount.com"
 
 # -- shared option types ----------------------------------------------------
 ExperimentId = Annotated[
@@ -656,6 +657,103 @@ def plot(
 
     for path in write_plots(scores, plots_dir):
         typer.echo(str(path))
+
+
+@app.command("compile-pipeline")
+def compile_pipeline_cmd(
+    dest: Annotated[Path | None, typer.Option("--dest", help="Output path.")] = None,
+    image: Annotated[str, typer.Option("--image", help="Overrides $BQ_CONTEXT_IMAGE.")] = "",
+) -> None:
+    """Compile the pipeline spec. Never commit the result.
+
+    A compiled YAML is a build artifact. A stale one still submits successfully
+    and runs obsolete code that returns plausible results, which is why this
+    exists as a command rather than a checked-in file.
+    """
+    import os  # noqa: PLC0415
+
+    if image:
+        os.environ["BQ_CONTEXT_IMAGE"] = image
+    if "BQ_CONTEXT_IMAGE" not in os.environ:
+        typer.secho(
+            "BQ_CONTEXT_IMAGE is not set. base_image is resolved at compile time, "
+            "so a spec cannot be produced without an explicit, immutable image "
+            "reference. Try: --image $(make -s image-ref)",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    from bq_context.pipeline.compilation import compile_pipeline  # noqa: PLC0415
+
+    path = compile_pipeline(dest)
+    typer.echo(str(path))
+
+
+@app.command("submit-pipeline")
+def submit_pipeline_cmd(
+    experiment_id: ExperimentId,
+    profile: Annotated[str, typer.Option("--profile", help="smoke | pilot | full")] = "smoke",
+    out: OutOpt = DEFAULT_OUT,
+    image: Annotated[str, typer.Option("--image", help="Overrides $BQ_CONTEXT_IMAGE.")] = "",
+    service_account: Annotated[str, typer.Option("--service-account")] = DEFAULT_SA,
+    skip_infra: Annotated[bool, typer.Option("--skip-infra")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Compile and print, do not submit.")
+    ] = False,
+) -> None:
+    """Compile and submit the pipeline to Vertex AI."""
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    config = _config()
+    if image:
+        os.environ["BQ_CONTEXT_IMAGE"] = image
+    if "BQ_CONTEXT_IMAGE" not in os.environ:
+        typer.secho("BQ_CONTEXT_IMAGE is not set (try --image).", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2)
+
+    from bq_context.pipeline.compilation import compile_pipeline  # noqa: PLC0415
+    from bq_context.pipeline.submit import PROFILES, submit_pipeline  # noqa: PLC0415
+
+    if profile not in PROFILES:
+        typer.secho(
+            f"Unknown profile {profile!r}. Valid: {', '.join(PROFILES)}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    params = {
+        "project": config.project,
+        "experiment_id": experiment_id,
+        "out": out,
+        "code_version": _code_version(),
+        "service_account": service_account,
+        "skip_infra": skip_infra,
+        **PROFILES[profile],
+    }
+    typer.echo(f"profile   {profile}")
+    typer.echo(f"image     {os.environ['BQ_CONTEXT_IMAGE']}")
+    for key, value in sorted(params.items()):
+        typer.echo(f"  {key:<18}{value}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = compile_pipeline(Path(tmp) / "pipeline.yaml")
+        typer.echo(f"compiled  {spec.stat().st_size:,} bytes")
+        if dry_run:
+            typer.secho("\ndry run; not submitted", fg=typer.colors.YELLOW)
+            return
+        job = submit_pipeline(
+            template_path=spec,
+            project=config.project,
+            location=config.locations.pipeline,
+            pipeline_root=f"{out}/pipeline_root",
+            service_account=service_account,
+            experiment_id=experiment_id,
+            parameter_values=params,
+        )
+        typer.secho(f"\nsubmitted {job.resource_name}", fg=typer.colors.GREEN)
 
 
 @app.command("plan-shards")

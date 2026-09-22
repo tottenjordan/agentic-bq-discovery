@@ -1,4 +1,4 @@
-# CLAUDE.md
+# GEMINI.md
 
 ## Code standards
 
@@ -87,6 +87,6 @@ previous one's commits.
 
 ---
 
-This file mirrors [GEMINI.md](./GEMINI.md). They are kept identical in substance
+This file mirrors [CLAUDE.md](./CLAUDE.md). They are kept identical in substance
 so no agent works to a different standard; `tests/test_agent_docs.py` fails if
 they drift. Edit both, or neither.

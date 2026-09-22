@@ -141,3 +141,43 @@ def test_the_scalar_columns_match_the_cell_model() -> None:
 def test_table_id_is_fully_qualified(config: ExperimentConfig) -> None:
     assert sink.table_id(config) == f"{config.project}.{sink.DATASET}.{sink.TABLE}"
     assert sink.DATASET == "bigquery_context_results"
+
+
+# ---------------------------------------------------------------------------
+# Field documentation
+# ---------------------------------------------------------------------------
+def test_every_column_is_documented() -> None:
+    """A new column must arrive with a description, not after someone notices.
+
+    The table is a discovery surface for an experiment about metadata quality,
+    and several of these descriptions carry caveats that exist nowhere else a
+    SQL user would look.
+    """
+    documented = set(sink.COLUMN_DESCRIPTIONS)
+    columns = {name for name, _ in sink.SCALAR_COLUMNS} | {"payload"}
+    assert columns - documented == set(), f"undocumented: {sorted(columns - documented)}"
+    assert documented - columns == set(), f"described but absent: {sorted(documented - columns)}"
+
+
+@pytest.mark.parametrize("description", sink.COLUMN_DESCRIPTIONS.values())
+def test_descriptions_are_substantive(description: str) -> None:
+    """Guards against a placeholder satisfying the completeness test above.
+
+    Length and terminal punctuation only. A capitalisation rule was tried and
+    removed: `status` correctly opens with the literal value `'ok'`, and a style
+    assertion that fights an accurate description is the wrong trade.
+    """
+    assert len(description) > 25, "too short to say anything useful"
+    assert description.rstrip().endswith((".", "'", '"', ")"))
+
+
+def test_the_caveat_descriptions_say_the_thing() -> None:
+    """These three are the reason the descriptions exist at all.
+
+    Each encodes something a SQL user would otherwise get wrong: token counts
+    that exclude agent-side LLM calls, a zero that has two causes, and a column
+    that is always zero.
+    """
+    assert "NOT counted" in sink.COLUMN_DESCRIPTIONS["reranker_total_tokens"]
+    assert "two indistinguishable causes" in sink.COLUMN_DESCRIPTIONS["ranked_count"]
+    assert sink.COLUMN_DESCRIPTIONS["cache_warm_s"].startswith("Always 0")

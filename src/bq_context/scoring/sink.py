@@ -18,7 +18,6 @@ migration.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +66,104 @@ SCALAR_COLUMNS: tuple[tuple[str, str], ...] = (
 #: Nested fields folded into the single JSON column.
 PAYLOAD_FIELDS = ("relevance", "nominated", "ranked_tables", "search_stats")
 
+#: Field documentation, attached to the BigQuery schema. Kept separate from the
+#: column list because it is documentation, not shape — and because this is
+#: where the non-obvious caveats live. An experiment about metadata quality
+#: should not ship an undocumented results table.
+COLUMN_DESCRIPTIONS: dict[str, str] = {
+    "experiment_id": (
+        "Experiment this cell belongs to, e.g. 'full-01'. The table holds every "
+        "run, so essentially every query should filter on this."
+    ),
+    "cell_key": (
+        "Globally unique '{question_id}|{approach}|tier{tier}|run{run_idx}'. "
+        "Carries no shard identity, which is what makes resume correct even when "
+        "the shard plan changes between runs."
+    ),
+    "question_id": "Question id from experiments/questions.json.",
+    "approach": (
+        "One of the six discovery strategies: bq_tools, kc_search, kc_context, "
+        "context_prefilter, semantic_context, search_direct. Clustering key."
+    ),
+    "tier": (
+        "Catalog enrichment level. 0 schema only, 1 adds data profiling, 2 adds "
+        "glossary term links, 3 adds a table-level aspect. Each tier is a separate "
+        "dataset holding an identical corpus, so tier is the only thing that "
+        "differs. Clustering key."
+    ),
+    "run_idx": (
+        "Repeat index 0-4. Five runs per (question, approach, tier) to average "
+        "over LLM non-determinism."
+    ),
+    "status": (
+        "'ok' or 'error'. Error rows carry error_type and error_message and have "
+        "no ranking; they are recorded rather than dropped so a sweep with a few "
+        "bad cells is still scoreable."
+    ),
+    "written_at": ("When the cell finished, not when the run started. Partition key (DAY)."),
+    "code_version": (
+        "Short git SHA that produced the cell. Threaded into the KFP cache key so "
+        "a code change cannot silently return cached results. full-01 mixes "
+        "5de0dde (2,993 cells) and 28a7b2c (7 re-run on resume)."
+    ),
+    "category": (
+        "Question class: single-table, multi-table-related, multi-table-disparate, "
+        "or trap. Trap questions name a table that does not actually answer them."
+    ),
+    "question": "The natural-language question put to the agent.",
+    "nominated_count": (
+        "Candidate tables considered before reranking. Means different things per "
+        "approach: the whole corpus for kc_context (15), semantic search hits for "
+        "the three search approaches, and an LLM shortlist for context_prefilter."
+    ),
+    "ranked_count": (
+        "Tables in the final ranking. Zero has two indistinguishable causes here: "
+        "search returned nothing, or the reranker's output failed to parse. Only "
+        "the shard log's parse warning separates them."
+    ),
+    "latency_s": "End-to-end wall clock for this cell, in seconds.",
+    "reranker_prompt_tokens": (
+        "Prompt tokens billed to the reranker call. See reranker_total_tokens for "
+        "what this excludes."
+    ),
+    "reranker_output_tokens": "Output tokens billed to the reranker call.",
+    "reranker_total_tokens": (
+        "Total reranker tokens. IMPORTANT: agent-side LLM tokens are NOT counted, "
+        "so cost for bq_tools and context_prefilter - the two approaches running "
+        "their own LLM loop - is understated. Retries are excluded, so a retried "
+        "call counts once."
+    ),
+    "reranker_calls": (
+        "Reranker invocations, normally 1. Zero for search_direct by design, since "
+        "it uses raw search order and calls no LLM at all, and zero for the few "
+        "cells where search returned nothing to rank."
+    ),
+    "adk_tool_calls": (
+        "ADK tool invocations. Only bq_tools runs a real tool loop (~5 per cell); "
+        "context_prefilter makes 1; the other four make none."
+    ),
+    "cache_warm_s": (
+        "Always 0 - vestigial. Context-cache warm is measured once per shard and "
+        "recorded on the shard summary, never attributed to a cell. Do not read "
+        "this as 'warming was free'."
+    ),
+    "error_type": "Exception class when status='error'; empty string otherwise.",
+    "error_message": "Exception message when status='error'; empty string otherwise.",
+    "attempts": (
+        "Attempts made for this cell. Greater than 1 means it was retried after a "
+        "transient failure such as a 429."
+    ),
+    "payload": (
+        "Variable-width nested fields as a JSON object (JSON_TYPE is 'object', so "
+        "JSON_VALUE(payload.a.b) works). Keys: relevance {must_have, nice_to_have, "
+        "distractor}, the graded ground truth; nominated, candidate table ids; "
+        "ranked_tables, [{table_id, rank, confidence}] in final order; "
+        "search_stats {raw_search_count, out_of_scope_dropped, page_size}, null "
+        "for approaches that do not search. Kept as JSON so a new per-approach "
+        "statistic is not a schema migration."
+    ),
+}
+
 PARTITION_FIELD = "written_at"
 CLUSTER_FIELDS = ("approach", "tier")
 
@@ -105,10 +202,13 @@ def _schema() -> list[Any]:
             name,
             field_type,
             mode="REQUIRED" if name in {"experiment_id", "cell_key"} else "NULLABLE",
+            description=COLUMN_DESCRIPTIONS.get(name, ""),
         )
         for name, field_type in SCALAR_COLUMNS
     ]
-    fields.append(bigquery.SchemaField("payload", "JSON"))
+    fields.append(
+        bigquery.SchemaField("payload", "JSON", description=COLUMN_DESCRIPTIONS["payload"])
+    )
     return fields
 
 
@@ -135,8 +235,16 @@ def ensure_table(config: ExperimentConfig, credentials: Credentials | None = Non
     table.description = "One row per (experiment, question, approach, tier, run)."
     # Already there is the normal case; partitioning and clustering cannot be
     # altered after creation anyway, so there is nothing to reconcile.
-    with contextlib.suppress(exceptions.Conflict):
+    try:
         client.create_table(table)
+    except exceptions.Conflict:
+        # Descriptions *can* change on an existing table, and a wording fix
+        # should not need the table dropped. Patch them in place; create_table
+        # would have been a no-op and left the old text behind.
+        existing = client.get_table(table_id(config))
+        existing.schema = _schema()
+        existing.description = table.description
+        client.update_table(existing, ["schema", "description"])
     return table_id(config)
 
 

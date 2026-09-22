@@ -46,6 +46,10 @@ An agent handed the wrong tables writes confidently wrong SQL. This repo measure
 
 </details>
 
+<div align="center">
+  <img src="docs/images/architecture.jpg" alt="Reference architecture: the bq-context CLI submits to Vertex AI Pipelines, which validates config, provisions the four-tier BigQuery corpus, gates on catalog enrichment, then fans 24 shards out eight-wide; each shard drives an ADK agent against BigQuery, the Dataplex Knowledge Catalog and Gemini, checkpointing cells to Cloud Storage" width="78%" />
+</div>
+
 ---
 
 ## 🎯 The Challenge
@@ -186,6 +190,10 @@ and [`docs/notes/gcp/corpus-provisioning.md`](docs/notes/gcp/corpus-provisioning
 
 All six emit the same `RerankerResponse`, so the comparison is apples-to-apples. Approaches **1** and **6** are controls that bracket the others.
 
+<div align="center">
+  <img src="docs/images/six-approaches.jpg" alt="The six discovery approaches as six pipelines: each starts from the same question and ends at ranked tables, differing in whether it uses a BigQuery tool loop, Knowledge Catalog search, cached context capsules, an LLM pre-filter, or no reranker at all" width="88%" />
+</div>
+
 | # | Approach | Discovery mechanism | ADK hook | Cache | Rerank |
 |---|---|---|---|---|---|
 | 1 | **BQ Metadata Tools**<br>`agent_bq_tools` | LLM tool loop over `BigQueryToolset` — schema only, no catalog | `after_tool_callback` | ✗ | ✓ |
@@ -259,6 +267,10 @@ The brief is *subtractive* — it strips only the heavy profiling block, so chea
 - **Built for a shared quota pool.** Jittered backoff, adaptive rate limiting, and a circuit breaker, because these models run on Dynamic Shared Quota where a 429 means contention, not a raisable limit.
 - **Retry-safe cost accounting.** Tokens are recorded once per kept response, never per attempt.
 - **Runs locally or on Vertex AI.** Every pipeline component wraps the same CLI, so a pipeline failure reproduces on a laptop with one command.
+
+<div align="center">
+  <img src="docs/images/shard-durability.jpg" alt="How a shard survives failure: normal execution checks for prior work then loops cells with fsync and periodic upload; three failure layers absorb retries, rate limits and systematic breakage; after a SIGKILL a resubmit under the same experiment id resumes from the durable attempt file" width="88%" />
+</div>
 
 ---
 

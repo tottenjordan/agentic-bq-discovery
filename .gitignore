@@ -26,3 +26,7 @@ pipeline.yaml
 # Local experiment scratch. Results live in GCS and BigQuery.
 /scratch/
 /local_results/
+
+# PaperBanana diagram runs. Generated artifacts; the kept figures live in
+# docs/images/. Each run dir holds multi-MB intermediate PNGs.
+outputs/

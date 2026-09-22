@@ -136,6 +136,7 @@ def run_shard(
     runs: int,
     out: str,
     code_version: str,
+    question_limit: int = 0,
 ) -> None:
     """Execute one (tier, approach) shard. Resumable, and never fails the run.
 
@@ -170,6 +171,8 @@ def run_shard(
         "--code-version",
         code_version,
     ]
+    if question_limit:
+        args += ["--limit", str(question_limit)]
     print("+ " + " ".join(args), flush=True)
     sys.exit(subprocess.run(args, check=False).returncode)
 
@@ -183,6 +186,7 @@ def finalize(
     tiers: list,
     approaches: list,
     require_complete: bool = True,
+    question_limit: int = 0,
 ) -> None:
     """Merge, score, plot — then fail if cells are missing.
 
@@ -209,6 +213,9 @@ def finalize(
     base = ["--experiment-id", experiment_id, "--out", out]
 
     merge = ["bq-context", "merge", *base, "--runs", str(runs)]
+    if question_limit:
+        # Must match what the shards ran, or merge reports phantom missing cells.
+        merge += ["--limit", str(question_limit)]
     for tier in tiers:
         merge += ["--tier", str(tier)]
     for approach in approaches:

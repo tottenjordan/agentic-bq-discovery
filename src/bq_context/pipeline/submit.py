@@ -37,21 +37,13 @@ __all__ = ["PROFILES", "submit_pipeline"]
 #: even if every scan, term, link, and aspect were missing. Tier 3 is maximal
 #: enrichment, so it has the most ways to fail informatively.
 PROFILES: dict[str, dict[str, Any]] = {
-    "smoke": {
-        "tiers": [3],
-        "runs": 1,
-        "require_complete": True,
-    },
-    "pilot": {
-        "tiers": [0, 1, 2, 3],
-        "runs": 1,
-        "require_complete": True,
-    },
-    "full": {
-        "tiers": [0, 1, 2, 3],
-        "runs": 5,
-        "require_complete": True,
-    },
+    # 6 shards, 18 cells. Proves the machinery, not the science.
+    "smoke": {"tiers": [3], "runs": 1, "question_limit": 3, "require_complete": True},
+    # The exact 24-shard topology of the full run, at 1/25th the cost. This is
+    # where P=8 contention, cache warm, and serialization problems surface.
+    "pilot": {"tiers": [0, 1, 2, 3], "runs": 1, "question_limit": 5, "require_complete": True},
+    # 3,000 cells.
+    "full": {"tiers": [0, 1, 2, 3], "runs": 5, "question_limit": 0, "require_complete": True},
 }
 
 

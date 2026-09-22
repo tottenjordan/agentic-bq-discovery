@@ -528,6 +528,10 @@ def run_shard(
     question_ids: Annotated[
         str, typer.Option("--questions-ids", help="Comma-separated subset.")
     ] = "",
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=0, help="Use only the first N questions. 0 means all."),
+    ] = 0,
     code_version: Annotated[str, typer.Option("--code-version")] = "",
 ) -> None:
     """Run every cell for one (tier, approach) pair. Resumable."""
@@ -542,6 +546,10 @@ def run_shard(
 
     questions = _load_questions(questions_file)
     chosen = [q.strip() for q in question_ids.split(",") if q.strip()] or list(questions)
+    if limit:
+        # Deterministic prefix, not a sample: the smoke and pilot profiles must
+        # hit the same cells every run or resume cannot recognise prior work.
+        chosen = chosen[:limit]
     unknown = [q for q in chosen if q not in questions]
     if unknown:
         typer.secho(f"Unknown question id(s): {', '.join(unknown)}", fg=typer.colors.RED, err=True)
@@ -573,6 +581,7 @@ def merge(
     questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     approach: Annotated[list[str] | None, typer.Option("--approach", "-a")] = None,
     tier: Annotated[list[int] | None, typer.Option("--tier", "-t")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=0)] = 0,
 ) -> None:
     """Collect shard output into one deduped results file.
 
@@ -582,6 +591,7 @@ def merge(
     from bq_context.scoring.merge import merge_experiment  # noqa: PLC0415
 
     questions = _load_questions(questions_file)
+    question_ids = list(questions)[:limit] if limit else list(questions)
     approaches, tiers = _selected(approach, tier)
     expected = [
         key
@@ -591,7 +601,7 @@ def merge(
             experiment_id=experiment_id,
             tier=t,
             approach=a,
-            question_ids=list(questions),
+            question_ids=question_ids,
             runs=runs,
             code_version="",
         ).planned_cells()
@@ -763,9 +773,11 @@ def plan_shards(
     questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     approach: Annotated[list[str] | None, typer.Option("--approach", "-a")] = None,
     tier: Annotated[list[int] | None, typer.Option("--tier", "-t")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=0)] = 0,
 ) -> None:
     """Print the shard plan as JSON. The pipeline fans out over this."""
     questions = _load_questions(questions_file)
+    question_ids = list(questions)[:limit] if limit else list(questions)
     approaches, tiers = _selected(approach, tier)
     code_version = _code_version()
     specs = [
@@ -773,7 +785,7 @@ def plan_shards(
             experiment_id=experiment_id,
             tier=t,
             approach=a,
-            question_ids=list(questions),
+            question_ids=question_ids,
             runs=runs,
             code_version=code_version,
         )

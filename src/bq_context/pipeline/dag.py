@@ -72,6 +72,7 @@ def bq_context_pipeline(
     code_version: str = "unknown",
     service_account: str = "",
     runs: int = 5,
+    question_limit: int = 0,
     # KFP resolves these defaults into the spec; they are never mutated.
     tiers: list = DEFAULT_TIERS,
     approaches: list = DEFAULT_APPROACHES,
@@ -121,6 +122,7 @@ def bq_context_pipeline(
         tiers=tiers,
         approaches=approaches,
         require_complete=require_complete,
+        question_limit=question_limit,
     )
     finalize.set_display_name("merge, score, verify")
     finalize.set_caching_options(enable_caching=False)
@@ -139,6 +141,7 @@ def bq_context_pipeline(
                 runs=runs,
                 out=out,
                 code_version=code_version,
+                question_limit=question_limit,
             )
             cell.set_display_name("run shard")
             # Retries are only worth enabling because shards resume: a retry

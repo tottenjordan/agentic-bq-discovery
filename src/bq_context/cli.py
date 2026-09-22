@@ -46,8 +46,67 @@ app = typer.Typer(
 )
 
 DEFAULT_QUESTIONS = Path("experiments/questions.json")
-DEFAULT_OUT = "gs://hybrid-vertex-bq-context"
-DEFAULT_SA = "bq-context-pipeline@hybrid-vertex.iam.gserviceaccount.com"
+
+#: Empty means "work it out at parse time". These were literals naming the
+#: project this was developed against, which is unreachable for anyone else —
+#: and because they were *defaults*, a second user got no error, just a run
+#: pointed at a bucket they cannot write and a service account that does not
+#: exist, failing with a permission message that names neither.
+#:
+#: Resolved in a parameter callback rather than here, because a module-level
+#: value is computed while Typer builds the command signature — before the app
+#: callback runs `_load_dotenv()`, so `.env` would be invisible. A Typer
+#: parameter callback runs *after* the group callback; verified, not assumed.
+DEFAULT_OUT = ""
+DEFAULT_SA = ""
+
+#: How the bucket and service account are named when nothing says otherwise.
+#: These reproduce this project's existing values exactly, so deriving them is a
+#: no-op here rather than a migration.
+_OUT_TEMPLATE = "gs://{project}-bq-context"
+_SA_TEMPLATE = "bq-context-pipeline@{project}.iam.gserviceaccount.com"
+
+
+def _derive(template: str, override: str, flag: str) -> str:
+    """Fill ``template`` from GOOGLE_CLOUD_PROJECT, unless ``override`` is set.
+
+    The convention is a convenience, not a requirement: a bucket or account that
+    does not follow it is configured with the override variable rather than by
+    passing a flag to every command.
+    """
+    import os  # noqa: PLC0415
+
+    explicit = os.environ.get(override, "").strip()
+    if explicit:
+        return explicit
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project:
+        message = (
+            f"Cannot work out a default for {flag}: GOOGLE_CLOUD_PROJECT is unset. "
+            f"Set it (in .env), pass {flag} explicitly, or set {override}."
+        )
+        raise typer.BadParameter(message)
+    return template.format(project=project)
+
+
+def default_out() -> str:
+    """Where results go: ``gs://{project}-bq-context`` unless BQ_CONTEXT_OUT says otherwise."""
+    return _derive(_OUT_TEMPLATE, "BQ_CONTEXT_OUT", "--out")
+
+
+def default_service_account() -> str:
+    """The pipeline's runtime identity, by the same convention."""
+    return _derive(_SA_TEMPLATE, "BQ_CONTEXT_SERVICE_ACCOUNT", "--service-account")
+
+
+def _resolve_out(value: str) -> str:
+    """Typer callback: leave an explicit value alone, otherwise derive one."""
+    return value or default_out()
+
+
+def _resolve_service_account(value: str) -> str:
+    return value or default_service_account()
+
 
 # -- shared option types ----------------------------------------------------
 ExperimentId = Annotated[
@@ -58,7 +117,15 @@ ExperimentId = Annotated[
         help="Stable id; the GCS prefix derives from it and resume depends on it being reused.",
     ),
 ]
-OutOpt = Annotated[str, typer.Option("--out", help="gs://bucket/prefix or a local directory.")]
+OutOpt = Annotated[
+    str,
+    typer.Option(
+        "--out",
+        callback=_resolve_out,
+        help="gs://bucket/prefix or a local directory. "
+        "Defaults to gs://{GOOGLE_CLOUD_PROJECT}-bq-context; override with BQ_CONTEXT_OUT.",
+    ),
+]
 # NB: an Annotated alias carries its flag name, so reusing TierOpt for a second
 # parameter silently binds both to --tier. Any other tier-valued option needs
 # its own alias; see BaselineOpt.
@@ -1080,7 +1147,15 @@ def submit_pipeline_cmd(
     profile: Annotated[str, typer.Option("--profile", help="smoke | pilot | full")] = "smoke",
     out: OutOpt = DEFAULT_OUT,
     image: Annotated[str, typer.Option("--image", help="Overrides $BQ_CONTEXT_IMAGE.")] = "",
-    service_account: Annotated[str, typer.Option("--service-account")] = DEFAULT_SA,
+    service_account: Annotated[
+        str,
+        typer.Option(
+            "--service-account",
+            callback=_resolve_service_account,
+            help="Defaults to bq-context-pipeline@{GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com; "
+            "override with BQ_CONTEXT_SERVICE_ACCOUNT.",
+        ),
+    ] = DEFAULT_SA,
     skip_infra: Annotated[bool, typer.Option("--skip-infra")] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Compile and print, do not submit.")

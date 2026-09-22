@@ -84,9 +84,15 @@ def _apply_config_env(task: dsl.PipelineTask) -> dsl.PipelineTask:
     description="Six BigQuery table-discovery approaches across four catalog enrichment tiers.",
 )
 def bq_context_pipeline(
-    project: str = "hybrid-vertex",
+    # Required, and first so Python permits it. Both previously defaulted to the
+    # project this was developed against, which no one else can reach — and as
+    # *defaults* they produced no error, just a run writing to a bucket the
+    # caller cannot access. `submit-pipeline` always sends both, and
+    # `test_submit.py` enforces that every declared parameter is sent, so a
+    # default here could only ever be a wrong answer nobody asked for.
+    project: str,
+    out: str,
     experiment_id: str = "pilot-01",
-    out: str = "gs://hybrid-vertex-bq-context",
     code_version: str = "unknown",
     service_account: str = "",
     runs: int = 5,

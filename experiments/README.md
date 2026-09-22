@@ -36,7 +36,8 @@ loss, nDCG@5, precision, latency, reranker tokens.
 | `upstream_baseline/results.md` | The original published report, kept for comparison. Our scorer reproduces its headline table exactly (`tests/test_metrics.py`). |
 
 Results are **not** written here. They go to
-`gs://hybrid-vertex-bq-context/experiments/{experiment_id}/`:
+`gs://{GOOGLE_CLOUD_PROJECT}-bq-context/experiments/{experiment_id}/` — the
+default derived from your project, overridable with `--out` or `BQ_CONTEXT_OUT`:
 
 ```
 shards/{tier}__{approach}/attempt-NNNN.jsonl   raw cells, one JSON per line

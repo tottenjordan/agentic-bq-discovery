@@ -1,0 +1,57 @@
+# Builds the runner image and proves it is usable.
+#
+# A separate workflow rather than a job in ci.yml because GitHub Actions has no
+# per-job path filter: the trigger is the only place to express "only when
+# something that affects the image changes". A 1.4 GB build on every docs commit
+# is not worth the minutes.
+#
+# Builds but never pushes — pushing needs GCP credentials, and this repo is
+# public. `make image` remains the way to publish.
+
+name: Container
+
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile, .dockerignore, pyproject.toml, uv.lock, cloudbuild.yaml]
+  pull_request:
+    paths: [Dockerfile, .dockerignore, pyproject.toml, uv.lock, cloudbuild.yaml]
+  workflow_dispatch:
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: builds and imports
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build -t bq-context-ci:${{ github.sha }} .
+
+      # The check that matters. KFP overwrites the container command with its
+      # own shim, so ENV PATH=/app/.venv/bin is the only thing making the
+      # injected bare `python3` resolve to the venv. Without it every pipeline
+      # component dies with a ModuleNotFoundError naming nothing useful — ten
+      # minutes and a container pull into a run.
+      - name: Imports resolve under bare python3
+        run: |
+          docker run --rm bq-context-ci:${{ github.sha }} python3 -c "
+          import sys, kfp, google.adk, bq_context
+          from bq_context.runner.cells import APPROACHES
+          assert sys.executable.startswith('/app/.venv/'), sys.executable
+          assert len(APPROACHES) == 6, APPROACHES
+          print('ok:', sys.executable)
+          "
+
+      - name: CLI resolves as a console script
+        run: |
+          docker run --rm bq-context-ci:${{ github.sha }} \
+            bq-context plan-shards --experiment-id ci --tier 3 --approach search_direct

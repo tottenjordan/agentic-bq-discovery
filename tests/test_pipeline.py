@@ -178,21 +178,12 @@ def test_profiles_do_not_set_parallelism() -> None:
 # ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------
-def test_pipeline_asserts_identity_rather_than_impersonating() -> None:
-    """Regression from the first real pipeline run, which failed here.
-
-    A pipeline task already runs *as* the service account. Passing
-    --impersonate <that same SA> asks it to impersonate itself, which needs
-    iam.serviceAccounts.getAccessToken on itself and fails 403. The useful check
-    inside a pipeline is the opposite: assert we *are* the expected principal,
-    which also catches Vertex silently falling back to the Compute Engine
-    default SA when service_account= is omitted.
-    """
-    source = Path(components.__file__).read_text()  # type: ignore[arg-type]
-    assert '"--expect-identity"' in source
-    # The quoted form is the flag being passed; the bare word also appears in
-    # comments explaining why it must not be.
-    assert '"--impersonate"' not in source, "a pipeline task cannot impersonate itself"
+# The identity regression (--impersonate vs --expect-identity) used to be
+# asserted here by grepping components.py for those strings, which proved only
+# that the characters appear somewhere in the file. It now lives in
+# tests/test_pipeline_cli_seam.py, which runs the component and inspects the
+# argv it actually builds — and additionally checks the flag exists on the CLI
+# receiving it, which the textual version could not.
 
 
 def test_preflight_component_takes_no_service_account(spec: dict[str, Any]) -> None:

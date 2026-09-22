@@ -10,6 +10,7 @@ quietly reintroduce the coupling.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -208,3 +209,38 @@ def test_no_mutable_module_globals_remain() -> None:
     assert not hasattr(config_mod, "set_active_tier")
     assert not hasattr(cache_mod, "_CACHE")
     assert not hasattr(util_rerank, "_USAGE_LOG")
+
+
+# ---------------------------------------------------------------------------
+# ADK environment
+# ---------------------------------------------------------------------------
+def test_configure_adk_env_sets_what_adk_builds_its_client_from(
+    config: ExperimentConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for a bug found only by running a live agent.
+
+    Our reranker constructs genai.Client(vertexai=True, ...) explicitly, but ADK
+    does not — for an LLM-driven agent it builds a client from these three
+    environment variables. Task 3 removed upstream's import-time os.environ
+    mutation without replacing it, and nothing caught it, because four of the
+    six approaches short-circuit the agent LLM in a callback. The first live
+    bq_tools cell failed with "No API key was provided".
+    """
+    for name in ("GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"):
+        monkeypatch.delenv(name, raising=False)
+
+    config.configure_adk_env()
+
+    assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "true"
+    assert os.environ["GOOGLE_CLOUD_PROJECT"] == "test-project"
+    # The model endpoint, not the compute region.
+    assert os.environ["GOOGLE_CLOUD_LOCATION"] == "global"
+
+
+def test_configure_adk_env_overrides_a_stale_regional_location(
+    config: ExperimentConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leftover regional value must not survive; it 404s for these models."""
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    config.configure_adk_env()
+    assert os.environ["GOOGLE_CLOUD_LOCATION"] == "global"

@@ -30,6 +30,8 @@ from google.cloud import bigquery
 from .util_lookup_context import lookup_context_batched
 
 if TYPE_CHECKING:
+    from google.auth.credentials import Credentials
+
     from bq_context.config import ExperimentConfig
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,7 @@ class TableCache:
         config: ExperimentConfig,
         datasets: list[str],
         scoped_tables: dict[str, list[str] | None] | None = None,
+        credentials: Credentials | None = None,
     ) -> TableCache:
         """Fetch context capsules for every in-scope table.
 
@@ -118,7 +121,7 @@ class TableCache:
         empty cache means.
         """
         cache = cls()
-        bq_client = bigquery.Client(project=config.project)
+        bq_client = bigquery.Client(project=config.project, credentials=credentials)
         scoped_tables = scoped_tables or {}
 
         for dataset in datasets:
@@ -132,7 +135,7 @@ class TableCache:
             entry_names = [config.dataplex_entry_name(dataset, name) for name in names]
 
             # lookupContext accepts at most 10 entries per call; the helper batches.
-            context_json = lookup_context_batched(config, entry_names)
+            context_json = lookup_context_batched(config, entry_names, credentials=credentials)
             if not context_json or context_json == "[]":
                 logger.warning(
                     "lookupContext returned nothing for %s. Note it returns an "

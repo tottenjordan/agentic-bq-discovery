@@ -90,6 +90,30 @@ class ExperimentConfig:
             top_k=int(os.environ.get("TOP_K", "5")),
         )
 
+    def configure_adk_env(self) -> None:
+        """Export the environment variables ADK builds its own client from.
+
+        Our reranker constructs ``genai.Client(vertexai=True, ...)`` explicitly,
+        but ADK does not: for an LLM-driven agent it builds a client from
+        ``GOOGLE_GENAI_USE_VERTEXAI``, ``GOOGLE_CLOUD_PROJECT``, and
+        ``GOOGLE_CLOUD_LOCATION``. Without them it falls back to the Gemini
+        Developer API and fails with "No API key was provided".
+
+        Upstream did this as an import-time side effect in ``config.py``. Making
+        it an explicit call is better, but it does mean it can be forgotten —
+        so ``execute_shard`` calls it, which is the single path through which
+        any agent runs.
+
+        Only ``bq_tools`` and ``context_prefilter`` actually reach the agent
+        LLM; the other four short-circuit it in a callback. That is why a
+        missing setting here stays invisible until one of those two runs.
+        """
+        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+        os.environ["GOOGLE_CLOUD_PROJECT"] = self.project
+        # The model endpoint, NOT the compute region: gemini-3.x flash models
+        # return 404 in us-central1 and 200 at global.
+        os.environ["GOOGLE_CLOUD_LOCATION"] = self.locations.gemini
+
     def tier_dataset(self, tier: int) -> str:
         """Dataset id holding the corpus at a given enrichment tier."""
         return tier_dataset(self.resource_prefix, tier)

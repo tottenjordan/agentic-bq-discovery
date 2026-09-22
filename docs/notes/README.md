@@ -33,9 +33,28 @@ notes.
 - [Dataplex / Knowledge Catalog gotchas](gcp/dataplex-catalog-gotchas.md) — `lookupContext`
   returns **empty rather than 403** on missing permissions; parentheses silently break search
   scoping; the three different locations catalog resources must live in; quotas.
+- [The pipeline service account](gcp/pipeline-service-account.md) — the grant set, why
+  `--impersonate` is the only meaningful way to check it, and confirmation that the SA reads
+  catalog context identically to a near-Owner account.
+- [Provisioning the four-tier corpus](gcp/corpus-provisioning.md) — what `ensure-infra` built and
+  how long it took, and the finding that **tier 2 is not a distinct factor level**: glossary entry
+  links are created correctly but never reach the capsule the agents read.
+
+- [First live runs](local-smoke-results.md) — measured per-cell cost vs upstream, cache warm at
+  ~4s (settling the sharding question), verified resume after a hard kill, and the ADK
+  environment bug that only a live agent run could surface.
 
 ### Tooling
 
+- [Pipeline runs — milestone 1 exit](pipeline-runs.md) — the two ways to get identity wrong in a
+  pipeline (a task cannot impersonate itself; `"default"` is an alias, not an identity), and the
+  green cold + resumed pilot runs.
+- [The Vertex AI Pipeline](kfp-pipeline.md) — the topology, and three KFP constraints that cost
+  real time: PEP 563 breaks compilation, `parallelism` must be a compile-time constant, and a
+  `dsl.If` group cannot be depended on from outside.
+- [The runner container](container.md) — why `ENV PATH=/app/.venv/bin` is the whole KFP
+  integration (confirmed by breaking it), two corrections to the plan, and the fact that Cloud
+  Build substitutions do not nest.
 - [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline
   YAML (with the drift incident that proves it), and measured uv-in-Docker cold-start fixes.
 

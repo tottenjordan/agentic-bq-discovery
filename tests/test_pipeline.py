@@ -227,3 +227,53 @@ def test_shards_are_keyed_on_the_corpus_as_well_as_the_code(spec: dict[str, Any]
     params = spec["components"][shard]["inputDefinitions"]["parameters"]
     assert "code_version" in params
     assert "corpus_fingerprint" in params
+
+
+# ---------------------------------------------------------------------------
+# Caching, per task
+# ---------------------------------------------------------------------------
+#: Every task's intended setting, with the reason it holds. Exhaustive on
+#: purpose: adding a task should require a decision, not inherit a default.
+CACHING = {
+    "validate-config": (False, "identity and IAM change outside the pipeline"),
+    "ensure-infra": (False, "corpus state is external"),
+    "preflight": (False, "a cached 'enrichment is fine' is worse than useless"),
+    "plan-shards": (True, "a pure function of its inputs"),
+    "run-shard": (True, "safe only because code_version AND corpus_fingerprint are inputs"),
+    "finalize": (False, "must run on every attempt, including failed ones"),
+}
+
+
+def _all_tasks(spec: dict[str, Any]) -> dict[str, Any]:
+    """Every task, including those nested in the ExitHandler and ParallelFor.
+
+    run-shard lives two DAGs deep (exit-handler-1 -> for-loop-2 -> run-shard), so
+    reading only spec["root"] silently skips the 24 tasks that matter most.
+    """
+    found = dict(spec["root"]["dag"]["tasks"])
+    for component in spec["components"].values():
+        if "dag" in component:
+            found.update(component["dag"]["tasks"])
+    return found
+
+
+@pytest.mark.parametrize(("task", "expected"), [(t, v[0]) for t, v in CACHING.items()])
+def test_each_task_sets_caching_deliberately(
+    spec: dict[str, Any],
+    task: str,
+    expected: bool,  # noqa: FBT001 - a parametrize value, not a caller-facing flag
+) -> None:
+    """Note this only became meaningful once submit stopped passing a job-level
+    bool, which overwrote every one of these settings before reaching Vertex."""
+    actual = _all_tasks(spec)[task].get("cachingOptions", {}).get("enableCache", False)
+    assert actual == expected, CACHING[task][1]
+
+
+def test_every_task_in_the_dag_has_a_caching_decision(spec: dict[str, Any]) -> None:
+    """A new task must not quietly inherit whatever the default happens to be.
+
+    Group tasks are excluded: an ExitHandler and a ParallelFor are containers,
+    not work, and carry no caching of their own.
+    """
+    groups = {"exit-handler-1", "for-loop-2"}
+    assert set(_all_tasks(spec)) - groups == set(CACHING)

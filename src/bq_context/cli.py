@@ -31,6 +31,7 @@ import typer
 from bq_context.config import TIERS, ExperimentConfig
 from bq_context.runner.cells import APPROACHES
 from bq_context.runner.models import ShardSpec
+from bq_context.runner.planner import order_shards
 from bq_context.runner.store import store_for
 
 if TYPE_CHECKING:
@@ -999,6 +1000,8 @@ def plan_shards(
     question_ids = list(questions)[:limit] if limit else list(questions)
     approaches, tiers = _selected(approach, tier)
     code_version = _code_version()
+    # order_shards, not a nested loop: tier-major ordering confounded tier with
+    # elapsed time in the first full run. See runner/planner.py.
     specs = [
         ShardSpec(
             experiment_id=experiment_id,
@@ -1008,8 +1011,7 @@ def plan_shards(
             runs=runs,
             code_version=code_version,
         )
-        for t in tiers
-        for a in approaches
+        for t, a in order_shards(tiers, approaches)
     ]
     typer.echo(json.dumps([s.model_dump() for s in specs], indent=2))
     total = sum(len(s.planned_cells()) for s in specs)

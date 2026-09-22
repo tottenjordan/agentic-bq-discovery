@@ -130,8 +130,18 @@ def plan_shards(tiers: list, approaches: list) -> list:
     image, so it does not travel through the plan — which keeps this well under
     KFP's 131,072-byte cap on a task's output-parameter payload, and keeps the
     cap irrelevant even if the plan grows.
+
+    **Order matters here, not just contents.** ParallelFor dispatches in list
+    order, so a tier-major plan puts all of tier 0 in the first wave and tier 3
+    hours later — which is how the first full run confounded tier with search
+    index warm-up. order_shards groups each approach's tiers into one wave.
     """
-    return [{"tier": int(t), "approach": str(a)} for t in tiers for a in approaches]
+    from bq_context.runner.planner import order_shards
+
+    return [
+        {"tier": int(t), "approach": str(a)}
+        for t, a in order_shards([int(x) for x in tiers], [str(x) for x in approaches])
+    ]
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)

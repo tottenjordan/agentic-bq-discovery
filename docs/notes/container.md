@@ -78,5 +78,47 @@ A `:cache` tag is pushed alongside for `--cache-from` on subsequent builds.
 Current: `:1baa86f`, digest
 `sha256:76ac686c3b70af1bc1251f8dafc42c63fdd91f91d13f8b92195247873dd7caf8`.
 
+## Where each environment variable actually comes from
+
+Audited end to end on 2026-09-22, because the answer was not what the code
+suggested. There are four sources, and knowing which one wins is the whole game:
+
+| variable | image | forwarded to tasks | notes |
+|---|---|---|---|
+| `GOOGLE_CLOUD_PROJECT` | yes | — | every component body also sets it from the `project` pipeline parameter |
+| `GOOGLE_CLOUD_LOCATION` | `global` | **never** | derived; `configure_adk_env` overwrites it in-process |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `true` | **never** | derived, same reason |
+| `BQ_CONTEXT_LOG_FORMAT` | `json` | — | structured logging for Cloud Logging |
+| `AGENT_MODEL`, `TOOL_MODEL` | no | **yes** | the models under test |
+| `BQ_LOCATION`, `DATAPLEX_LOCATION` | no | **yes** | |
+| `RESOURCE_PREFIX` | no | **yes** | which corpus is measured |
+| `TOP_K` | no | **yes** | retrieval depth; changes the metrics |
+| `SECRET_ID` | no | `finalize` only | the only task that generates figures |
+
+**The six "forwarded" rows were not forwarded at all until this audit.** Nothing
+set them in the container, so `ExperimentConfig.from_env` fell through to its
+defaults on every pipeline run regardless of `.env`. They *looked* fine only
+because each `.env` value happened to equal the corresponding default — including
+`RESOURCE_PREFIX`, which had genuinely diverged earlier the same day.
+
+The second consequence was worse than the divergence. Shards key their cache on
+`code_version` and `corpus_fingerprint`; neither moves when `AGENT_MODEL` changes,
+so switching models and resubmitting at the same commit returned cells scored
+with the **previous** model, green. Forwarding the values puts them in the
+executor's container spec, which is part of what Vertex hashes.
+
+`GOOGLE_CLOUD_LOCATION` is excluded deliberately and a test enforces it. It is an
+*output* of `configure_adk_env`, not user configuration, and this repo's own
+`.env` carries `us-central1` — forwarding that would send every Gemini call to an
+endpoint where these models 404 (see [[gemini-endpoints-and-quota]]). It is inert
+today only because the reranker passes `location=` explicitly and ADK is
+configured before any agent is built.
+
+Two things the audit found that are *not* problems: `GOOGLE_GENAI_USE_VERTEXAI`
+may be `TRUE` or `true` — google-genai lowercases, verified for
+`true/TRUE/True/1`. And `PROJECT_NUM` in `.env` is dead: `corpus/setup.py`
+resolves the project number through the API and never reads it.
+
 Related: [[local-smoke-results]] for the ADK environment variables this image
-also sets.
+also sets, [[kfp-pipeline]] for why these are compile-time constants rather than
+pipeline parameters.

@@ -17,15 +17,11 @@ imports the modules without compiling.
 
 from __future__ import annotations
 
-import os
-
-# Must precede the pipeline imports: components.py resolves base_image from the
-# environment at import time, deliberately raising KeyError when it is unset.
-os.environ.setdefault("BQ_CONTEXT_IMAGE", "us-central1-docker.pkg.dev/p/r/runner:testsha")
-# Same reason: components.py resolves the secret's name at import time, and the
-# `spec` fixture is module-scoped, so a function-scoped monkeypatch is too late.
-os.environ.setdefault("SECRET_ID", "test-secret-name")
-
+# BQ_CONTEXT_IMAGE, SECRET_ID and the config variables are pinned by
+# `conftest.py` at *its* import, which precedes every test module. Setting them
+# again here would be redundant, and worse: it would let this module pass in
+# isolation while the ordering bug it guards against still existed under a full
+# run. See the comment beside `_FAKE_ENV`.
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +151,10 @@ def _env(spec: dict[str, Any], executor: str) -> dict[str, str]:
 
 
 def test_finalize_carries_the_secret_name_in_its_environment(spec: dict[str, Any]) -> None:
+    # Non-empty first. Both sides are "" when SECRET_ID is unset at import, and
+    # this assertion then compares nothing — which is what it did in CI until
+    # conftest started pinning the value at import time.
+    assert components.SECRET_ID, "unset at import; the comparison below would be vacuous"
     assert _env(spec, "exec-finalize").get("SECRET_ID") == components.SECRET_ID
 
 
@@ -167,6 +167,30 @@ def test_no_other_task_carries_it(spec: dict[str, Any]) -> None:
         if name != "exec-finalize"
     }
     assert not [n for n, env in others.items() if "SECRET_ID" in env]
+
+
+def test_the_experiment_configuration_reaches_every_task(spec: dict[str, Any]) -> None:
+    """Whatever the submitter set must appear on all six executors.
+
+    Not just the shards: `ensure-infra` and `preflight` resolve the corpus from
+    RESOURCE_PREFIX, and a run that provisions one corpus and measures another is
+    the failure this closes.
+    """
+    assert components.CONFIG_ENV, "fixture env should have set at least one key"
+    for name in spec["deploymentSpec"]["executors"]:
+        env = _env(spec, name)
+        for key, value in components.CONFIG_ENV.items():
+            assert env.get(key) == value, f"{name} is missing {key}"
+
+
+def test_no_derived_location_is_forwarded_into_the_spec(spec: dict[str, Any]) -> None:
+    """The image pins GOOGLE_CLOUD_LOCATION=global because these models 404 in
+    us-central1. A task-level value would override the image's, so a developer
+    .env saying us-central1 must never reach the spec."""
+    for name in spec["deploymentSpec"]["executors"]:
+        env = _env(spec, name)
+        assert "GOOGLE_CLOUD_LOCATION" not in env
+        assert "GOOGLE_GENAI_USE_VERTEXAI" not in env
 
 
 def test_the_compiled_spec_never_contains_the_key_itself(spec: dict[str, Any]) -> None:

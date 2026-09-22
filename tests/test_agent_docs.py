@@ -76,3 +76,49 @@ def test_the_attribution_rule_is_stated_broadly(name: str) -> None:
 def test_it_directs_durable_findings_to_the_notes(name: str) -> None:
     text = (ROOT / name).read_text()
     assert "docs/notes/" in text
+
+
+# ---------------------------------------------------------------------------
+# The claims the docs make must stay true
+# ---------------------------------------------------------------------------
+# A stale agent doc is worse than none: it is confidently wrong, and an agent
+# has no way to tell. These pin the specific, checkable assertions.
+@pytest.mark.parametrize("name", AGENT_DOCS)
+def test_the_make_targets_it_names_exist(name: str) -> None:
+    makefile = (ROOT / "Makefile").read_text()
+    targets = set(re.findall(r"^([a-z][a-z-]*):", makefile, re.MULTILINE))
+    cited = set(re.findall(r"\bmake ([a-z][a-z-]*)", (ROOT / name).read_text()))
+    assert cited, "expected the doc to cite at least one make target"
+    assert cited <= targets, f"{name} cites missing target(s): {sorted(cited - targets)}"
+
+
+@pytest.mark.parametrize("name", AGENT_DOCS)
+def test_the_subcommand_count_is_current(name: str) -> None:
+    """If this fails, a subcommand was added — update the docs, do not delete this."""
+    import typer
+
+    from bq_context.cli import app
+
+    actual = len(typer.main.get_command(app).commands)  # type: ignore[attr-defined]
+    claimed = re.search(r"(\d+) subcommands", (ROOT / name).read_text())
+    assert claimed, "the doc should state how many subcommands there are"
+    assert int(claimed.group(1)) == actual
+
+
+@pytest.mark.parametrize("name", AGENT_DOCS)
+def test_the_files_it_points_at_as_examples_exist(name: str) -> None:
+    """The doc names specific modules as patterns to follow or avoid."""
+    text = (ROOT / name).read_text()
+    for path in re.findall(r"`((?:src/|tests/|docs/)[\w/.]+\.(?:py|md))`", text):
+        assert (ROOT / path).exists(), f"{name} names nonexistent {path}"
+    for module in re.findall(r"`(pipeline/[\w.]+\.py|corpus/[\w.]+\.py|config\.py)`", text):
+        assert (ROOT / "src" / "bq_context" / module).exists(), f"{name} names missing {module}"
+
+
+def test_the_gemini_endpoint_claim_is_true() -> None:
+    """The docs say Gemini lives at `global`; Locations is the source of truth."""
+    from bq_context.config import Locations
+
+    assert Locations().gemini == "global"
+    for name in AGENT_DOCS:
+        assert "`global`" in (ROOT / name).read_text()

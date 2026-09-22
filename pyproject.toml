@@ -1,0 +1,71 @@
+[project]
+name = "bq-context"
+version = "0.1.0"
+description = "Evaluation harness for six BigQuery table-discovery approaches"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "google-adk>=1.36,<2",
+    "google-cloud-aiplatform>=1.158,<2",
+    "google-cloud-bigquery>=3.45.2",
+    "google-cloud-dataplex>=2.20.0",
+    "google-cloud-resource-manager>=1.18.0",
+    "google-cloud-storage>=3.14.1",
+    "google-genai>=2.24.0",
+    "kfp==2.17.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "pydantic>=2.13.5",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+bq-context = "bq_context.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
+    "ty>=0.0.83",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",       # docstring style: we require docstrings by convention, not by linter
+    "COM812",  # trailing comma: conflicts with the formatter
+    "ISC001",  # implicit string concat: conflicts with the formatter
+    "ANN401",  # Any is legitimate at the ADK/genai boundary
+    "S101",    # assert: used deliberately in tests and preflight gates
+    "TD",      # TODO formatting
+    "FIX",     # allow TODO comments to exist
+    "CPY001",  # per-file copyright headers: attribution lives in NOTICE, and
+               # Apache-2.0 requires preserving upstream headers, not adding new ones
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "SLF001"]  # magic values and private access are fine in tests
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

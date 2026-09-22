@@ -365,12 +365,19 @@ def test_run_shard_rejects_an_out_of_range_tier(questions_file: Path, tmp_path: 
 # ---------------------------------------------------------------------------
 # preflight ladder assessment
 # ---------------------------------------------------------------------------
-def rung(tier: int, size: int, profiled: int = 15, aspects: list[str] | None = None) -> dict:
+def rung(
+    tier: int,
+    size: int,
+    profiled: int = 209,
+    terms: int = 0,
+    aspects: list[str] | None = None,
+) -> dict:
     return {
         "tier": tier,
         "tables": 15,
         "bytes": size,
         "profiled": profiled,
+        "terms": terms,
         "aspects": aspects or [],
     }
 
@@ -379,8 +386,8 @@ def test_a_healthy_ladder_has_no_complaints() -> None:
     ladder = [
         rung(0, 49_000, profiled=0),
         rung(1, 118_000),
-        rung(2, 130_000, aspects=["related_terms"]),
-        rung(3, 140_000, aspects=["guidelines", "related_terms"]),
+        rung(2, 119_882, terms=24),
+        rung(3, 122_346, terms=24, aspects=["overview"]),
     ]
     problems, warnings = assess_ladder(ladder, empty=False)
     assert problems == []
@@ -388,24 +395,22 @@ def test_a_healthy_ladder_has_no_complaints() -> None:
 
 
 def test_a_flat_rung_is_warned_about_even_when_the_ladder_climbs_overall() -> None:
-    """The failure this gate exists for, and the one it originally missed.
+    """A rung that genuinely adds nothing must still be caught.
 
-    Observed live on 2026-09-22: glossary entry links are created successfully
-    but never surface in the context capsule, so tier 2 is byte-for-byte
-    equivalent to tier 1 while the factorial still treats them as distinct
-    levels. Endpoint-only checks pass this happily.
+    Endpoint-only checks pass this happily: the ladder climbs 49KB -> 122KB
+    overall while one rung in the middle contributes no enrichment at all.
     """
     ladder = [
         rung(0, 49_089, profiled=0),
         rung(1, 118_275),
-        rung(2, 119_882),  # glossary never lands
+        rung(2, 119_882),  # same features as tier 1 despite +1.6KB
         rung(3, 122_346, aspects=["overview"]),
     ]
     problems, warnings = assess_ladder(ladder, empty=False)
 
     assert problems == [], "the ladder does climb overall, so this is not fatal"
     assert len(warnings) == 1
-    assert "tier 2 adds nothing over tier 1" in warnings[0]
+    assert "tier 2 adds no enrichment over tier 1" in warnings[0]
 
 
 def test_an_empty_cache_is_fatal_and_names_the_likely_cause() -> None:
@@ -422,6 +427,17 @@ def test_a_rung_that_only_gains_metadata_bytes_still_warns() -> None:
     """Timestamps and entry ids differ between datasets; that is not enrichment."""
     _, warnings = assess_ladder([rung(1, 118_000), rung(2, 118_900)], empty=False)
     assert len(warnings) == 1
+
+
+def test_glossary_enrichment_is_detected_even_though_it_is_tiny() -> None:
+    """The bug this gate actually had, inverted.
+
+    Real glossary enrichment across 15 tables is ~1.6 KB — below any sensible
+    byte threshold. An earlier version compared byte deltas and declared a
+    fully-enriched tier 2 dead. Feature counts, not bytes.
+    """
+    _, warnings = assess_ladder([rung(1, 118_275), rung(2, 119_882, terms=24)], empty=False)
+    assert warnings == [], "24 glossary-annotated columns is not 'nothing'"
 
 
 def test_a_rung_gaining_a_new_aspect_is_not_flat() -> None:

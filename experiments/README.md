@@ -17,13 +17,15 @@ Ground truth is graded — `must_have` / `nice_to_have` / `distractor`, see
 questions all mean something. Metrics: discovery recall, final recall, rerank
 loss, nDCG@5, precision, latency, reranker tokens.
 
-> **Read before interpreting tier results.** As provisioned, **tier 2 is not a
-> distinct factor level**: glossary entry links are created correctly but never
-> reach the context capsule the agents read, so tier 2 is indistinguishable from
-> tier 1. Tier 3 also falls back to the `overview` aspect rather than
-> `guidelines`. Details and evidence in
-> [`docs/notes/gcp/corpus-provisioning.md`](../docs/notes/gcp/corpus-provisioning.md).
-> `bq-context preflight` warns about this on every run.
+> **Read before interpreting tier results.** All four tiers are distinct, but two
+> caveats apply. The `lookupContext` capsule **truncates each schema to 25
+> columns** by default, so 6 of the 24 glossary term links — mostly on the
+> 153-column `hurricanes` view — never reach the reranker;
+> `all_schema_fields=true` recovers them at ~1.8× the capsule size. And tier 3
+> attaches the `overview` aspect rather than `guidelines`, which is not
+> available in this project. Evidence in
+> [`docs/notes/gcp/lookup-context-capsule.md`](../docs/notes/gcp/lookup-context-capsule.md).
+> `bq-context preflight` prints the full ladder on every run.
 
 ## Files
 
@@ -55,7 +57,16 @@ bq-context preflight --tier 3       # assert enrichment actually reached the cap
 
 `preflight` is not optional. `lookupContext` returns an **empty response rather
 than 403** when permissions are missing, so an under-permissioned run produces
-tiers that score identically, a green pipeline, and a plausible wrong result.
+tiers that score identically, a green pipeline, and a plausible wrong result. It
+prints the enrichment actually present at each tier:
+
+```
+tier   tables     bytes  profiled  terms  aspects
+0          15    49,089         0      0  —
+1          15   118,275       209      0  —
+2          15   119,882       209     18  —
+3          15   122,346       209     18  overview
+```
 
 ## Running
 

@@ -19,62 +19,48 @@ Rough phase timings from the log: datasets + 60 views ≈ 2 min; 45 scan
 creations at the hardcoded 5s throttle ≈ 7 min; scan polling ≈ 8 min; glossary,
 terms, and links ≈ 2 min.
 
-## The important finding: the tier ladder is not what it claims
+## The tier ladder
 
 `bq-context preflight --tier 3` reports what actually reached the capsule:
 
 ```
-tier   tables     bytes  profiled  aspects
-0          15    49,089         0  —
-1          15   118,275        15  —
-2          15   119,882        15  —
-3          15   122,346        15  overview
+tier   tables     bytes  profiled  terms  aspects
+0          15    49,089         0      0  —
+1          15   118,275       209      0  —
+2          15   119,882       209     18  —
+3          15   122,346       209     18  overview
 ```
+
+Every rung adds something, so the gate raises no warning.
 
 | tier | intended | actual |
 |---|---|---|
 | 0 | schema only | ✅ as intended |
-| 1 | + data profiling | ✅ 0 → 15 profiled tables, +69 KB |
-| 2 | + business glossary | ❌ **indistinguishable from tier 1** |
-| 3 | + authored guidelines | ⚠️ `overview` aspect on 4 tables, not `guidelines` |
+| 1 | + data profiling | ✅ 209 profiled columns, +69 KB |
+| 2 | + business glossary | ✅ 18 annotated columns / 8 tables (24 with `all_schema_fields`) |
+| 3 | + authored guidelines | ⚠️ `overview` aspect on 4 tables; `guidelines` is not available |
 
-### Tier 2: glossary links exist but never reach the capsule
+### Tier 2: real, but partially truncated by default
 
-This is not a setup failure. The links are created successfully and are
-correctly formed — `get_entry_link` confirms:
+**Corrected 2026-09-22.** An earlier version of this note said glossary
+enrichment never reached the capsule and that tier 2 was a dead factor level.
+That was wrong. Glossary definitions arrive **per-column under a `terms` key**,
+carrying the term's display name and description:
 
-```
-def-t2-subscriber-type-austin-bikeshare-trips-subscriber-type
-  references: [('austin_bikeshare_trips', 'Schema.subscriber_type', 'SOURCE'),
-               ('subscriber-type', '', 'TARGET')]
-```
-
-But **neither `lookup_entry` nor `lookup_context` surfaces them.** Tier 1 and
-tier 2 return identical aspect keys:
-
-```
-['655216118709.global.bigquery-view',
- '655216118709.global.data-profile',
- '655216118709.global.schema']
+```json
+"name": "subscriber_type",
+"terms": "Subscriber Type; Rider membership category. Distinguishes
+          annual/monthly members from single-ride and walk-up casual users."
 ```
 
-Searching the tier-2 capsule for `related_terms`, `glossar`, or the term id
-`subscriber-type` returns zero hits. The 1,607-byte difference from tier 1 is
-timestamps and entry ids, not content.
+Tier 2 carries **18 annotated columns across 8 tables**; tiers 0 and 1 carry
+zero. It is a genuine factor level.
 
-**Consequence:** tier 2 is not a distinct factor level. Every approach sees
-exactly what it sees at tier 1, so 750 of the 3,000 cells measure tier 1 twice.
-Any tier-2 result must be read as a replicate of tier 1, not as a glossary arm.
-
-**This is a strong candidate explanation for part of upstream's flat tier
-response** (see [[upstream-experiment]]). If glossary enrichment never reaches
-the capsule that the agents consume, tier 2 contributes nothing *by
-construction*, and no amount of replication would reveal it.
-
-Unresolved: whether this is a `lookupContext` preview limitation, a missing
-request option, or propagation lag longer than the ~20 minutes observed here.
-Worth re-checking before the full run — if links do eventually surface, the
-tier-2 arm becomes valid and the timing matters for the pipeline's ordering.
+The caveat that remains is smaller: the default capsule truncates each schema to
+**25 columns**, so 6 of the 24 term links — 5 on the 153-column `hurricanes`
+view, 1 on `air_quality_annual_summary` — fall past the cut.
+`all_schema_fields=true` recovers all 24 at ~1.8× the capsule size. See
+[[lookup-context-capsule]] for the measurements and the open decision.
 
 ### Tier 3: the guidelines aspect type is not readable
 
@@ -112,16 +98,16 @@ NL→SQL guidance, which is a caveat on the tier-3 arm, not a defect to repair.
 Obtaining real `guidelines` would mean asking Google for allowlist access — an
 account conversation, not a command.
 
-## The gate was too weak, and this is why it now checks every rung
+## The gate was wrong twice, in opposite directions
 
-The first version of `preflight` compared only tier 3 against tier 0. That
-passed — tier 3 genuinely carries 73 KB more context — while tier 2 was dead.
-An endpoint check cannot see a flat rung in the middle, and a flat middle rung
-is worse than a missing tier, because the factorial still reports the two levels
-as distinct.
+First it compared only tier 3 against tier 0, which cannot see a flat rung in
+the middle. Then, once it walked every rung, it compared **byte deltas** and
+looked only at top-level capsule keys — so it declared a fully-enriched tier 2
+dead, because real glossary enrichment is ~1.6 KB and lives per-column.
 
-`preflight` now walks the whole ladder and warns per transition. See
-`assess_ladder` in `cli.py`, tested in `tests/test_cli.py`.
+It now compares an enrichment **signature** — `(aspects, profiled columns,
+term-annotated columns)` — and ignores bytes entirely. See `assess_ladder` in
+`cli.py`, tested in `tests/test_cli.py`.
 
 ## Teardown
 

@@ -36,9 +36,11 @@ notes.
 - [The pipeline service account](gcp/pipeline-service-account.md) — the grant set, why
   `--impersonate` is the only meaningful way to check it, and confirmation that the SA reads
   catalog context identically to a near-Owner account.
-- [Provisioning the four-tier corpus](gcp/corpus-provisioning.md) — what `ensure-infra` built and
-  how long it took, and the finding that **tier 2 is not a distinct factor level**: glossary entry
-  links are created correctly but never reach the capsule the agents read.
+- [What `lookupContext` actually returns](gcp/lookup-context-capsule.md) — glossary definitions
+  arrive **per-column under `terms`**; the default capsule truncates schemas to 25 columns;
+  `all_schema_fields=true` works and the budget keys do nothing.
+- [Provisioning the four-tier corpus](gcp/corpus-provisioning.md) — what `ensure-infra` built, how
+  long it took, and why tier 3 falls back to `overview`.
 
 - [First live runs](local-smoke-results.md) — measured per-cell cost vs upstream, cache warm at
   ~4s (settling the sharding question), verified resume after a hard kill, and the ADK

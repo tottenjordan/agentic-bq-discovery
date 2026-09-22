@@ -139,6 +139,9 @@ def bq_context_pipeline(
                 runs=runs,
                 out=out,
                 code_version=code_version,
+                # Corpus shape as a cache-key input. code_version alone lets a
+                # changed corpus return cells scored against the old one.
+                corpus_fingerprint=check.outputs["fingerprint"],
                 question_limit=question_limit,
             )
             cell.set_display_name("run shard")

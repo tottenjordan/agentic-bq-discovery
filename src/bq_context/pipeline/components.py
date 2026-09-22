@@ -29,6 +29,7 @@ survives ``uv sync --no-dev`` in the image.
 # "Artifacts must have both a schema_title and a schema_version ... Got: str".
 
 import os
+from typing import NamedTuple
 
 from kfp import dsl
 
@@ -46,6 +47,21 @@ __all__ = [
 #: KFP execution cache keys on the image, so a floating tag would let a cached
 #: "success" come from code that no longer exists.
 RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
+
+
+class Preflight(NamedTuple):
+    """`preflight`'s output parameters.
+
+    A class rather than the functional ``NamedTuple("Preflight", [...])`` form:
+    the functional form is a *call*, which is not a valid return annotation and
+    which ty rejects outright. KFP reads ``_fields`` either way.
+
+    Only the annotation can use this. The component *body* is extracted and run
+    standalone in the container, where this class does not exist, so the body
+    builds its own equivalent namedtuple.
+    """
+
+    fingerprint: str
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
@@ -102,24 +118,59 @@ def ensure_infra(project: str, out: str, skip: bool = False) -> None:
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
-def preflight(project: str, tier: int, baseline: int) -> None:
-    """Assert catalog enrichment is real before any measurement runs.
+def preflight(project: str, tier: int, baseline: int) -> Preflight:
+    """Assert catalog enrichment is real, and publish the corpus fingerprint.
 
     The most important gate in the system. lookupContext returns an empty
     response rather than 403 on missing permissions, so a privileged developer
     account reads context fine while the SA silently reads nothing — and here
     the task *is* the SA, so this is the real test.
+
+    Returns the enrichment fingerprint, which ``dag.py`` threads into every shard
+    as a cache-key input. Without it, changing the corpus and resubmitting under
+    the same commit returns cells scored against the old corpus.
+
+    A ``NamedTuple`` rather than a bare ``-> str`` so the DAG reads
+    ``check.outputs["fingerprint"]``; KFP names a bare return ``"Output"``, and
+    ``task.output`` raises outright once a task has more than one output.
     """
+    import json
     import os
     import subprocess
-    import sys
+    from collections import namedtuple
 
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
+    payload_path = "/tmp/preflight.json"  # noqa: S108
     # No --impersonate: the task already runs as the pipeline service account,
     # which is exactly the identity this gate needs to exercise.
-    args = ["bq-context", "preflight", "--tier", str(tier), "--baseline", str(baseline)]
+    args = [
+        "bq-context",
+        "preflight",
+        "--tier",
+        str(tier),
+        "--baseline",
+        str(baseline),
+        "--json",
+        payload_path,
+    ]
     print("+ " + " ".join(args), flush=True)
-    sys.exit(subprocess.run(args, check=False).returncode)
+    returncode = subprocess.run(args, check=False).returncode
+    if returncode != 0:
+        # Fail the task. No outputs are produced, which is correct: a fingerprint
+        # for a corpus that failed the gate would key shard cache to a corpus
+        # nobody should be running on.
+        raise SystemExit(returncode)
+
+    with open(payload_path) as handle:  # noqa: PTH123
+        payload = json.load(handle)
+    print(f"corpus fingerprint {payload['fingerprint']}", flush=True)
+    # Deliberately not the module-level Preflight: this body is extracted and run
+    # standalone in the container, where that class does not exist. KFP matches on
+    # _fields, so a structurally identical namedtuple is what it wants — but ty
+    # sees two distinct types, and it is right to.
+    return namedtuple("Preflight", ["fingerprint"])(  # noqa: PYI024  # ty: ignore[invalid-return-type]
+        payload["fingerprint"]
+    )
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
@@ -153,6 +204,7 @@ def run_shard(
     runs: int,
     out: str,
     code_version: str,
+    corpus_fingerprint: str = "",
     question_limit: int = 0,
 ) -> None:
     """Execute one (tier, approach) shard. Resumable, and never fails the run.
@@ -187,6 +239,8 @@ def run_shard(
         out,
         "--code-version",
         code_version,
+        "--corpus-fingerprint",
+        corpus_fingerprint,
     ]
     if question_limit:
         args += ["--limit", str(question_limit)]

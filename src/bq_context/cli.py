@@ -626,6 +626,10 @@ def preflight(
             "pipeline the task already is the SA.",
         ),
     ] = "",
+    json_out: Annotated[
+        Path | None,
+        typer.Option("--json", help="Also write the ladder and corpus fingerprint here."),
+    ] = None,
 ) -> None:
     """Assert catalog enrichment is real before any measurement runs.
 
@@ -698,6 +702,20 @@ def preflight(
             typer.secho(f"FAIL  {problem}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
+    from bq_context.runner.planner import corpus_fingerprint  # noqa: PLC0415
+
+    fingerprint = corpus_fingerprint(ladder)
+    typer.echo(f"corpus fingerprint  {fingerprint}")
+
+    if json_out is not None:
+        # Written only once the gate has passed: a fingerprint for a corpus that
+        # failed preflight would key shard cache to a corpus nobody should run on.
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(
+            json.dumps({"ladder": ladder, "fingerprint": fingerprint}, indent=2) + "\n"
+        )
+        typer.echo(f"wrote {json_out}", err=True)
+
     gained = ladder[-1]["bytes"] - ladder[0]["bytes"]
     typer.secho(
         f"\nOK — tier {tier} carries {gained:,} bytes more context than tier {baseline}.",
@@ -721,6 +739,15 @@ def run_shard(
         typer.Option("--limit", min=0, help="Use only the first N questions. 0 means all."),
     ] = 0,
     code_version: Annotated[str, typer.Option("--code-version")] = "",
+    corpus_fingerprint: Annotated[
+        str,
+        typer.Option(
+            "--corpus-fingerprint",
+            help="Enrichment shape this shard ran against, from `preflight --json`. "
+            "Recorded as provenance; the pipeline also passes it so a corpus "
+            "change invalidates the KFP shard cache.",
+        ),
+    ] = "",
 ) -> None:
     """Run every cell for one (tier, approach) pair. Resumable."""
     config = _config()
@@ -750,6 +777,7 @@ def run_shard(
         question_ids=chosen,
         runs=runs,
         code_version=code_version or _code_version(),
+        corpus_fingerprint=corpus_fingerprint,
     )
 
     from bq_context.runner.cells import execute_shard  # noqa: PLC0415

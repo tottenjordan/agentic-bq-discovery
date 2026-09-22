@@ -19,6 +19,12 @@ is visible.
 
 from __future__ import annotations
 
+import os
+
+# Must precede the pipeline imports: components.py resolves base_image from the
+# environment at import time, deliberately raising KeyError when it is unset.
+os.environ.setdefault("BQ_CONTEXT_IMAGE", "us-central1-docker.pkg.dev/p/r/runner:testsha")
+
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -107,3 +113,131 @@ def test_the_failure_policy_lets_sibling_shards_finish(captured: dict[str, Any])
     one dead shard must not cancel the other 23."""
     _submit()
     assert captured["failure_policy"] == "slow"
+
+
+# ---------------------------------------------------------------------------
+# What the submit CLI actually sends
+#
+# A pipeline parameter the DAG declares but the CLI never sends is not an error
+# anywhere: KFP resolves the compiled default and the run proceeds, green and
+# wrong. `refresh_figures` sat like that — declared on `bq_context_pipeline`,
+# threaded into `finalize`, and unreachable, so every submit ran with False and
+# `bq-context figures` was never invoked. Nothing failed; the feature was simply
+# not connected.
+#
+# The reverse direction fails loudly at submit time (Vertex rejects an unknown
+# parameter name), so it needs a test far less than this direction does.
+# ---------------------------------------------------------------------------
+
+#: DAG parameters the CLI deliberately leaves at their compiled default. Keep
+#: this list short and justified: every entry is a knob no one can turn without
+#: editing `dag.py`.
+DELIBERATE_DEFAULTS = {
+    # All six approaches, always. Running a subset is a local `run-shard`
+    # concern; a partial sweep submitted to Vertex would produce a results file
+    # that `merge --require-complete` then rejects.
+    "approaches",
+}
+
+
+def _pipeline_parameters() -> set[str]:
+    """Every parameter the compiled pipeline accepts.
+
+    `component_spec.inputs`, not `inspect.signature`. `@dsl.pipeline` returns a
+    GraphComponent, and introspecting it yields `{'args', 'kwargs'}` — the
+    wrapper's signature, not the pipeline's. Checked rather than assumed: with
+    `inspect.signature` the guard does not pass vacuously, it fails permanently,
+    reporting `['args', 'kwargs']` as unwired parameters and saying nothing about
+    the real one. A red test that names the wrong thing gets an entry added to
+    DELIBERATE_DEFAULTS to silence it, and then the guard really is vacuous.
+
+    `component_spec.inputs` is also what Vertex validates a submission against,
+    so it is the right authority regardless.
+    """
+    from bq_context.pipeline.dag import bq_context_pipeline
+
+    return set(bq_context_pipeline.component_spec.inputs or {})
+
+
+def _params_the_cli_sends(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Invoke `submit-pipeline` with the submit call stubbed, and capture the keys."""
+    from typer.testing import CliRunner
+
+    from bq_context import cli
+    from bq_context.pipeline import submit as submit_module
+
+    seen: dict[str, Any] = {}
+
+    def _capture(**kwargs: Any) -> _FakeJob:
+        seen.update(kwargs)
+        return _FakeJob()
+
+    monkeypatch.setattr(submit_module, "submit_pipeline", _capture)
+    result = CliRunner().invoke(
+        cli.app, ["submit-pipeline", "-e", "t", "--image", "img:test", "--profile", "smoke"]
+    )
+    assert result.exit_code == 0, result.output
+    return set(seen["parameter_values"])
+
+
+def test_every_pipeline_parameter_is_sent_or_deliberately_defaulted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE guard. Adding a parameter to `bq_context_pipeline` without wiring it
+    through the CLI must fail here rather than silently run on its default."""
+    declared = _pipeline_parameters()
+    sent = _params_the_cli_sends(monkeypatch)
+
+    unwired = declared - sent - DELIBERATE_DEFAULTS
+    assert not unwired, (
+        f"{sorted(unwired)} declared on the pipeline but never sent by the CLI; "
+        "they would silently run on the compiled default. Wire them, or add them "
+        "to DELIBERATE_DEFAULTS with a reason."
+    )
+
+
+def test_the_cli_sends_no_parameter_the_pipeline_does_not_declare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vertex rejects an unknown parameter name at submit time, which costs a
+    round trip to discover. A typo should fail in the suite instead."""
+    assert _params_the_cli_sends(monkeypatch) <= _pipeline_parameters()
+
+
+def test_refresh_figures_is_reachable_from_the_command_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The specific regression: the flag exists and its value reaches the job."""
+    from typer.testing import CliRunner
+
+    from bq_context import cli
+    from bq_context.pipeline import submit as submit_module
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        submit_module,
+        "submit_pipeline",
+        lambda **kwargs: (seen.update(kwargs), _FakeJob())[1],
+    )
+    argv = ["submit-pipeline", "-e", "t", "--image", "img:test", "--refresh-figures"]
+    result = CliRunner().invoke(cli.app, argv)
+    assert result.exit_code == 0, result.output
+    assert seen["parameter_values"]["refresh_figures"] is True
+
+
+def test_figures_are_off_unless_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Generation is slow, paid and non-deterministic; the default must be off."""
+    from typer.testing import CliRunner
+
+    from bq_context import cli
+    from bq_context.pipeline import submit as submit_module
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        submit_module,
+        "submit_pipeline",
+        lambda **kwargs: (seen.update(kwargs), _FakeJob())[1],
+    )
+    result = CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t", "--image", "img:test"])
+    assert result.exit_code == 0, result.output
+    assert seen["parameter_values"]["refresh_figures"] is False

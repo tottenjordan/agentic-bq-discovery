@@ -1222,12 +1222,26 @@ def submit_pipeline_cmd(
             help="Disable execution caching for the whole job, overriding every per-task setting.",
         ),
     ] = False,
+    refresh_figures: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-figures",
+            help="Regenerate the PaperBanana architecture diagrams in finalize. "
+            "Slow, paid and non-deterministic; off by default, so a normal run "
+            "reuses the figures already in the experiment prefix.",
+        ),
+    ] = False,
 ) -> None:
     """Compile and submit the pipeline to Vertex AI.
 
     Without ``--no-cache`` the job defers to the per-task settings in ``dag.py``,
     which is what lets finished shards be skipped while the enrichment gate still
     runs every time.
+
+    ``--refresh-figures`` only redraws the *diagrams*. The three data charts are
+    matplotlib and are rendered on every run regardless: a generative model
+    drawing bars whose heights are not derived from the numbers is a correctness
+    hazard in a benchmark report.
     """
     import os  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
@@ -1257,6 +1271,7 @@ def submit_pipeline_cmd(
         "code_version": _code_version(),
         "service_account": service_account,
         "skip_infra": skip_infra,
+        "refresh_figures": refresh_figures,
         **PROFILES[profile],
     }
     typer.echo(f"profile   {profile}")

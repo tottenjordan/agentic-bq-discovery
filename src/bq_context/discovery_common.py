@@ -18,7 +18,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.cloud import dataplex_v1
 from google.genai import types
 
-from bq_context.reranker.util_rerank import call_reranker, format_reranker_markdown
+from bq_context.reranker.util_rerank import acall_reranker, format_reranker_markdown
 from bq_context.runtime import current_tier, get_datasets, is_table_in_scope
 from bq_context.schemas import RerankerResponse
 
@@ -124,8 +124,7 @@ async def rerank_and_store(
     """
     config = current_tier().config
     top_k = callback_context.state.get("top_k", config.top_k)
-    result = await asyncio.to_thread(
-        call_reranker,
+    result = await acall_reranker(
         config=config,
         question=question,
         candidate_metadata=candidate_metadata,

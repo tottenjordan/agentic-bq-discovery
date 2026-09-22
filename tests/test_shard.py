@@ -15,6 +15,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+from bq_context.runner.backoff import CircuitBreaker
 from bq_context.runner.models import Cell, ShardSpec
 from bq_context.runner.resume import completed_keys, load_shard_records, shard_prefix
 from bq_context.runner.shard import ShardRunner
@@ -179,6 +180,45 @@ async def test_checkpoints_during_the_run_not_just_at_the_end(tmp_path: Path) ->
     ).run()
 
     assert max(seen_midway) >= 2, f"nothing was uploaded mid-run: {seen_midway}"
+
+
+async def test_circuit_breaker_abandons_a_systematically_broken_shard(
+    tmp_path: Path,
+) -> None:
+    """Bad IAM should cost seconds, not the whole retry budget."""
+    spec = make_spec(runs=5, n_questions=5)  # 25 cells planned
+    store = LocalStore(tmp_path)
+    executor = FakeExecutor(spec, fail_on=set(QUESTIONS))  # everything fails
+
+    result = await ShardRunner(
+        spec,
+        store,
+        executor,
+        QUESTIONS,
+        breaker=CircuitBreaker(max_consecutive=3),
+        heartbeat_seconds=1e6,
+    ).run()
+
+    assert result.aborted
+    assert "consecutive" in result.abort_reason
+    assert result.executed == 3, "stopped at the breaker, not after all 25"
+    assert not result.complete
+    assert store.exists(f"{shard_prefix(spec)}/_FAILED")
+    # Work done before the trip is still durable and still resumable.
+    assert len(load_shard_records(store, spec)) == 3
+
+
+async def test_breaker_does_not_fire_on_an_occasional_failure(tmp_path: Path) -> None:
+    spec = make_spec(runs=2, n_questions=5)  # 10 cells, 2 will fail
+    store = LocalStore(tmp_path)
+
+    result = await ShardRunner(
+        spec, store, FakeExecutor(spec, fail_on={"q3"}), QUESTIONS, heartbeat_seconds=1e6
+    ).run()
+
+    assert not result.aborted
+    assert result.executed == 10
+    assert result.failed == 2
 
 
 @pytest.mark.parametrize("upload_every", [1, 3, 100])

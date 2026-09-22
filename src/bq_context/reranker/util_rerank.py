@@ -1,5 +1,6 @@
 """Utility for calling Gemini with structured output to produce a ranked table list."""
 
+import asyncio
 import json
 import re
 
@@ -7,6 +8,7 @@ from google import genai
 from google.genai import types
 
 from bq_context.config import ExperimentConfig
+from bq_context.runner.backoff import retry_async
 from bq_context.schemas import RerankerResponse
 from bq_context.usage import record_usage_response
 
@@ -177,6 +179,35 @@ the question (even as a supporting join), include it.
         t.table_id = _normalize_table_id(t.table_id)
 
     return result
+
+
+async def acall_reranker(
+    config: ExperimentConfig,
+    question: str,
+    candidate_metadata: str,
+    discovery_method: str,
+    top_k: int,
+) -> RerankerResponse:
+    """``call_reranker`` off-thread, with retry around the whole call.
+
+    The retry wraps this boundary rather than living inside ``call_reranker``
+    for a specific reason: a transport failure returns no response and records
+    no usage, so a retried call is counted exactly once. Using the SDK's own
+    retry would hide the attempts below the point where usage is recorded.
+
+    ``asyncio.to_thread`` copies the caller's context, so the ``usage_scope``
+    and ``TierContext`` opened by the cell runner are visible inside the worker.
+    """
+    return await retry_async(
+        lambda: asyncio.to_thread(
+            call_reranker,
+            config=config,
+            question=question,
+            candidate_metadata=candidate_metadata,
+            discovery_method=discovery_method,
+            top_k=top_k,
+        )
+    )
 
 
 def format_reranker_markdown(result: RerankerResponse, label: str) -> str:

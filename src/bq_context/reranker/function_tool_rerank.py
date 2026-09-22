@@ -5,13 +5,11 @@ produces a ranked RerankerResponse via Gemini structured output. (Approach 6,
 Search Direct, skips the reranker and uses semantic search's own ranking.)
 """
 
-import asyncio
-
 from google.adk import tools
 
 from bq_context.runtime import current_tier
 
-from .util_rerank import call_reranker
+from .util_rerank import acall_reranker
 
 
 async def rerank_tables(
@@ -46,12 +44,9 @@ async def rerank_tables(
     # Store nominations in state for the orchestrator to compare
     tool_context.state[f"nominated_tables_{discovery_method}"] = table_ids
 
-    # Run in thread pool so parallel agents don't block the event loop.
-    # asyncio.to_thread copies the current contextvars.Context into the worker,
-    # so the usage_scope() opened by the cell runner is visible to the reranker's
-    # record_usage_response call. Token accounting depends on that.
-    result = await asyncio.to_thread(
-        call_reranker,
+    # Off-thread so parallel agents don't block the event loop, with retry
+    # around the whole call so a retried request counts its tokens once.
+    result = await acall_reranker(
         config=config,
         question=question,
         candidate_metadata=candidate_metadata,

@@ -34,7 +34,7 @@ from typing import NamedTuple
 from kfp import dsl
 
 __all__ = [
-    "REPORT_IMAGE",
+    "FIGURES_EXTRA",
     "RUNNER_IMAGE",
     "ensure_infra",
     "finalize",
@@ -49,11 +49,18 @@ __all__ = [
 #: "success" come from code that no longer exists.
 RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
 
-#: The exit task's image: the runner plus PaperBanana. Separate because that is
-#: ~51 extra packages needed by exactly one task, and putting them in the shared
-#: image would make all 24 shards pull them for nothing. Defaults to the runner
-#: so the pipeline still compiles and runs without figure generation.
-REPORT_IMAGE = os.environ.get("BQ_CONTEXT_REPORT_IMAGE") or RUNNER_IMAGE
+#: Installed at runtime by `finalize`, and only when figures are requested.
+#:
+#: A second image was tried first — the runner plus PaperBanana — and deleted.
+#: A task's image is fixed at compile time (ContainerSpec.image rejects a
+#: PipelineChannel), so it could not be built by an earlier step and handed over;
+#: it had to be built and pushed out of band. Measured, a cold install of this
+#: extra takes ~3s against minutes to build and push a multi-gigabyte image, so
+#: the second image, its Dockerfile, its Cloud Build config and the job of
+#: keeping it in step with the runner were all buying nothing.
+#:
+#: Must stay in step with the `figures` extra in pyproject.toml; a test asserts it.
+FIGURES_EXTRA = "paperbanana>=0.1"
 
 
 class Preflight(NamedTuple):
@@ -312,7 +319,7 @@ def run_shard(
     sys.exit(returncode)
 
 
-@dsl.component(base_image=REPORT_IMAGE, install_kfp_package=False)
+@dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
 def finalize(
     project: str,
     experiment_id: str,
@@ -382,9 +389,18 @@ def finalize(
         ["bq-context", "report", *base, "--html", summary.path, "--figures", plots_dir],
     )
     if refresh_figures:
-        # Architecture diagrams only, and off by default: generation is slow,
-        # paid and non-deterministic, and they do not change between runs.
-        steps = (*steps[:-1], ["bq-context", "figures", "--dir", plots_dir], steps[-1])
+        # Install the extra here rather than shipping it in the image. It is ~51
+        # packages needed by one task on the rare run that asks for figures, and a
+        # cold install measures ~3s — far cheaper than a second image nobody can
+        # hand to a component anyway, since base_image is compile-time only.
+        install = ["uv", "pip", "install", "--python", sys.executable, "-q", FIGURES_EXTRA]
+        print("+ " + " ".join(install), flush=True)
+        if subprocess.run(install, check=False).returncode != 0:
+            print("WARN  could not install the figures extra; skipping diagrams", flush=True)
+        else:
+            # Architecture diagrams only: generation is slow, paid and
+            # non-deterministic, and they do not change between runs.
+            steps = (*steps[:-1], ["bq-context", "figures", "--dir", plots_dir], steps[-1])
     for args in steps:
         print("+ " + " ".join(args), flush=True)
         completed = subprocess.run(args, check=False)

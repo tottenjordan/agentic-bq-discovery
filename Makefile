@@ -1,4 +1,4 @@
-.PHONY: help install lint format test check clean image image-report image-ref image-ref-report
+.PHONY: help install lint format test check clean image image-ref
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -26,18 +26,9 @@ image: ## Build, verify, and push the runner image to Artifact Registry
 	gcloud builds submit --region=us-central1 --config cloudbuild.yaml \
 	  --substitutions=_TAG=$$(git rev-parse --short HEAD) .
 
-image-report: ## Build and push the report image (runner + PaperBanana)
-	@test -z "$$(git status --porcelain)" || \
-	  (echo "Working tree is dirty; the image would be tagged with a SHA that does not describe it." && exit 1)
-	gcloud builds submit --region=us-central1 \
-	  --config=cloudbuild.report.yaml \
-	  --substitutions=_RUNNER_IMAGE="$$(make -s image-ref)",_TAG="$$(git rev-parse --short HEAD)" .
-
-image-ref: ## Print the runner image reference for the current commit
+image-ref: ## Print the image reference for the current commit
 	@echo us-central1-docker.pkg.dev/hybrid-vertex/bq-context/runner:$$(git rev-parse --short HEAD)
 
-image-ref-report: ## Print the report image reference for the current commit
-	@echo us-central1-docker.pkg.dev/hybrid-vertex/bq-context/report:$$(git rev-parse --short HEAD)
 
 clean: ## Remove caches and build artifacts
 	rm -rf .ruff_cache .pytest_cache .ty_cache .coverage htmlcov dist build

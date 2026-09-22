@@ -17,7 +17,6 @@ imports the modules without compiling.
 
 from __future__ import annotations
 
-import importlib
 import os
 
 # Must precede the pipeline imports: components.py resolves base_image from the
@@ -134,38 +133,30 @@ def test_code_version_reaches_every_shard(spec: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Image and caching
 # ---------------------------------------------------------------------------
-def test_every_image_is_immutable_and_known(spec: dict[str, Any]) -> None:
-    """Two images are legitimate now: the lean runner, and the report image for
-    finalize alone. The assertion that matters is unchanged — nothing floats.
+def test_every_component_pins_the_same_immutable_image(spec: dict[str, Any]) -> None:
+    """One image, still.
 
-    REPORT_IMAGE falls back to RUNNER_IMAGE when unset, so an ordinary compile
-    still produces one image and figure generation stays optional.
+    A second image — the runner plus PaperBanana — was built and then deleted.
+    A task's image is fixed at compile time, so it could not be handed over by an
+    earlier step, and a cold install of the extra measures ~3s against minutes to
+    build and push. `finalize` installs it at runtime when figures are requested.
     """
     images = {c["container"]["image"] for c in spec["deploymentSpec"]["executors"].values()}
-    assert images <= {components.RUNNER_IMAGE, components.REPORT_IMAGE}
-    assert not any(i.endswith(":latest") for i in images), "a floating tag makes the KFP cache lie"
+    assert len(images) == 1
+    image = images.pop()
+    assert not image.endswith(":latest"), "a floating tag makes the KFP cache lie"
+    assert image == components.RUNNER_IMAGE
 
 
-def test_only_finalize_may_carry_the_heavier_report_image(
-    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
-) -> None:
-    """PaperBanana is ~51 extra packages needed by one task. If a shard picks up
-    the report image, all 24 pull it for nothing on every run."""
-    monkeypatch.setenv("BQ_CONTEXT_REPORT_IMAGE", "us-central1-docker.pkg.dev/p/r/report:sha")
-    importlib.reload(components)
-    importlib.reload(dag)
-    try:
-        out = tmp_path_factory.mktemp("two") / "pipeline.yaml"
-        compile_pipeline(out)
-        executors = yaml.safe_load(out.read_text())["deploymentSpec"]["executors"]
-        report_tasks = {
-            name for name, e in executors.items() if e["container"]["image"].endswith("report:sha")
-        }
-        assert report_tasks == {"exec-finalize"}
-    finally:
-        monkeypatch.delenv("BQ_CONTEXT_REPORT_IMAGE")
-        importlib.reload(components)
-        importlib.reload(dag)
+def test_the_figures_extra_matches_the_declared_optional_dependency() -> None:
+    """finalize installs FIGURES_EXTRA by string; pyproject declares the same
+    extra for local use. Drift means the pipeline installs a version nobody
+    tested against."""
+    import tomllib
+
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    declared = pyproject["project"]["optional-dependencies"]["figures"]
+    assert declared == [components.FIGURES_EXTRA]
 
 
 @pytest.mark.parametrize("task", ["ensure-infra", "preflight", "finalize"])

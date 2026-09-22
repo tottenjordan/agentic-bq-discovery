@@ -379,7 +379,26 @@ Add a test asserting the intended setting for every task, so a future change is 
 
 ---
 
-### Task 8: PaperBanana diagrams — `finalize` on its own report image
+### Task 8: PaperBanana diagrams — runtime install, no second image
+
+> **Superseded during implementation.** This task originally specified a second
+> image (`Dockerfile.report`, a Cloud Build config, a `REPORT_IMAGE` env var) for
+> `finalize`. That was built, then deleted. Two things settled it:
+>
+> - **A task's image is fixed at compile time.** `ContainerSpec.image` rejects a
+>   `PipelineChannel` from an upstream task *or* a pipeline parameter, so a
+>   report image could never be built by an earlier pipeline step and handed to
+>   `finalize` — it had to be built and pushed out of band.
+> - **A cold install of the extra measures ~3s**, against minutes to build and
+>   push a multi-gigabyte image. The second image, its Dockerfile, its Cloud
+>   Build config, and the job of keeping it in step with the runner were all
+>   buying nothing.
+>
+> `finalize` now runs `uv pip install paperbanana` only when `refresh_figures` is
+> set. Everything below about *what* is generated still applies; only the
+> delivery mechanism changed.
+
+### Original design (kept for the reasoning, not the mechanism)
 
 **Files:** `Dockerfile.report` (new), `Makefile`, `src/bq_context/pipeline/{components,dag}.py`,
 `src/bq_context/scoring/figures.py` (new), `src/bq_context/cli.py`, `tests/test_pipeline.py`

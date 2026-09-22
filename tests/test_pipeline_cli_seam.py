@@ -213,3 +213,42 @@ def test_finalize_persists_the_report_and_figures() -> None:
     argv = {a[1]: a for a in _invocations("finalize")}
     assert "--report" in argv["score"], "the markdown report was stdout-only"
     assert "--plots-dir" in argv["plot"], "figures went to a relative path inside the container"
+
+
+def _all_invocations(component: str, **over: Any) -> list[list[str]]:
+    """Every argv the component builds, including non-bq-context ones."""
+    captured: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+
+    with (
+        mock.patch.object(
+            subprocess, "run", lambda a, **_k: (captured.append(list(a)), _Completed())[1]
+        ),
+        contextlib.suppress(BaseException),
+    ):
+        getattr(components, component).python_func(**{**COMPONENT_ARGS[component], **over})
+    return captured
+
+
+def test_figures_are_off_by_default() -> None:
+    """Generation is slow, paid and non-deterministic, and architecture diagrams
+    do not change between runs. Nothing should install or render unless asked."""
+    argv = _all_invocations("finalize")
+    assert not any("paperbanana" in " ".join(a) for a in argv)
+    assert not any(a[:2] == ["bq-context", "figures"] for a in argv)
+
+
+def test_requesting_figures_installs_the_extra_then_renders() -> None:
+    """The extra is installed at runtime rather than shipped in the image.
+
+    A second image was tried and deleted: a task's image is fixed at compile time
+    so it cannot be handed over by an earlier step, and a cold install measures
+    ~3s against minutes to build and push one.
+    """
+    argv = _all_invocations("finalize", refresh_figures=True)
+    install = next(a for a in argv if a[:3] == ["uv", "pip", "install"])
+    render = next(i for i, a in enumerate(argv) if a[:2] == ["bq-context", "figures"])
+    assert components.FIGURES_EXTRA in install
+    assert argv.index(install) < render, "the install must precede the render"

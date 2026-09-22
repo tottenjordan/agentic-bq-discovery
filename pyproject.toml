@@ -126,6 +126,15 @@ exclude = [
 [tool.ty.terminal]
 error-on-warning = true
 
+[tool.coverage.run]
+omit = [
+    # Vendored from upstream as the reference for the metrics port and
+    # deliberately never imported (README calls it out; metrics.py explains
+    # why). Its 427 statements can never be covered, and counting them dragged
+    # the headline number down by 8 points for no signal.
+    "src/bq_context/scoring/upstream_build_results.py",
+]
+
 [tool.coverage.report]
 show_missing = true
 skip_empty = true

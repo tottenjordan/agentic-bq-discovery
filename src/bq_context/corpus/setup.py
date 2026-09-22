@@ -62,6 +62,18 @@ CATALOG_LOCATION = BQ_LOCATION.lower()
 # The four enrichment tiers. Every tier holds the identical CORPUS below.
 TIERS = [0, 1, 2, 3]
 
+# The enrichment ladder, single-sourced. Each rung adds one kind of catalog
+# metadata on top of the rung below it, so these are nested by construction.
+#
+# cleanup.py imports these rather than repeating the thresholds. That matters:
+# the two modules previously each spelled `if tier < 1` / `if tier < 2` inline,
+# so moving a rung in setup.py would have left cleanup.py silently orphaning
+# DataScans and entry links — and stale catalog resources survive a corpus
+# rebuild, which is how a later run gets enrichment it was never meant to see.
+PROFILED_TIERS = [t for t in TIERS if t >= 1]  # data profile scans
+GLOSSARY_TIERS = [t for t in TIERS if t >= 2]  # glossary terms + definition links
+GUIDELINES_TIERS = [t for t in TIERS if t >= 3]  # table-level guidelines aspect
+
 
 def tier_dataset(tier: int) -> str:
     """Dataset id holding the corpus at a given enrichment tier."""
@@ -507,7 +519,7 @@ def create_and_run_profile_scans():
     # Collect (tier, view) pairs whose BQ view exists (tiers >= 1).
     targets = []
     for tier in TIERS:
-        if tier < 1:
+        if tier not in PROFILED_TIERS:
             print(f"    Skipping profiling (tier 0): {tier_dataset(tier)}")
             continue
         for view_def in CORPUS:
@@ -612,7 +624,7 @@ def create_glossary_and_links():
     glossary_parent = f"projects/{PROJECT_ID}/locations/{loc}"
     glossary_name = f"{glossary_parent}/glossaries/{GLOSSARY_ID}"
 
-    enriched_tiers = [t for t in TIERS if t >= 2]
+    enriched_tiers = GLOSSARY_TIERS
     if not enriched_tiers or not GLOSSARY_TERMS:
         return
 
@@ -779,7 +791,7 @@ def enrich_with_guidelines():
     """Attach the guidelines system aspect to tier-3 tables (NL→SQL hints)."""
     from google.cloud import dataplex_v1
 
-    tier3_tables = [t for t in TIERS if t >= 3]
+    tier3_tables = GUIDELINES_TIERS
     if not tier3_tables or not GUIDELINES:
         return
 

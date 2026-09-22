@@ -63,6 +63,8 @@ notes.
   Build substitutions do not nest.
 - [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline
   YAML (with the drift incident that proves it), and measured uv-in-Docker cold-start fixes.
+- [The test suite](test-suite.md) — why 59% is close to honest, test the seams rather than both
+  sides of them, and mutation-test every guard (three here once asserted nothing).
 
 ## How to run it
 

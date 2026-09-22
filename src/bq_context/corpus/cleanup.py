@@ -19,6 +19,8 @@ from bq_context.corpus.setup import (  # noqa: E402
     CORPUS,
     GLOSSARY_ID,
     GLOSSARY_TERMS,
+    GLOSSARY_TIERS,
+    PROFILED_TIERS,
     TIERS,
     definition_link_id,
     profile_scan_id,
@@ -50,9 +52,7 @@ def delete_entry_links():
     loc = CATALOG_LOCATION
     link_parent = f"projects/{PROJECT_ID}/locations/{loc}/entryGroups/@bigquery"
 
-    for tier in TIERS:
-        if tier < 2:
-            continue
+    for tier in GLOSSARY_TIERS:
         for term_id, term_def in GLOSSARY_TERMS.items():
             for table, columns in term_def.get("columns", {}).items():
                 for column in columns:
@@ -95,9 +95,7 @@ def delete_profile_scans():
     client = DataScanServiceClient()
     parent = f"projects/{PROJECT_ID}/locations/{DATAPLEX_LOCATION}"
 
-    for tier in TIERS:
-        if tier < 1:
-            continue
+    for tier in PROFILED_TIERS:
         for view_def in CORPUS:
             scan_id = profile_scan_id(tier, view_def["name"])
             scan_name = f"{parent}/dataScans/{scan_id}"

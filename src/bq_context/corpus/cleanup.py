@@ -12,7 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
 # Reuse the manifest + id helpers from setup so the two never drift.
 from bq_context.corpus.setup import (  # noqa: E402

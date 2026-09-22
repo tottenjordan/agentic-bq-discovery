@@ -27,15 +27,46 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from pathlib import Path
 
-if TYPE_CHECKING:
-    from pathlib import Path
+from dotenv import load_dotenv
+
+# parents[3], not three `.parent` hops: scoring -> bq_context -> src -> root.
+# `parent.parent.parent` lands in `src/`, where there is no .env, so the load is
+# a silent no-op — the same latent bug as in the vendored corpus scripts.
+# override=False so an exported variable, or the container's task environment,
+# always wins over the file. A missing .env is a no-op, which is the normal case
+# in the runner image.
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
 logger = logging.getLogger(__name__)
 
-#: Secret Manager secret holding a Gemini Developer API key.
-SECRET_ID = "bq-context-gemini-api-key"  # noqa: S105 - a secret *name*, not a secret
+
+def secret_id() -> str:
+    """Which Secret Manager secret to read the API key from.
+
+    Read at call time rather than import time so `.env` and the environment can
+    change it without the module having to be reimported — and so tests can set
+    it with `monkeypatch.setenv` rather than reaching into module state.
+
+    Sourced from `SECRET_ID`, which `.env` carries locally and the CLI loads on
+    startup. In the pipeline there is no `.env`; the value comes from the task
+    environment, or falls back to the default.
+    """
+    import os  # noqa: PLC0415
+
+    name = os.getenv("SECRET_ID", "").strip()
+    if not name:
+        # Deliberately no fallback. A default would be a name invented here that
+        # nobody configured, and reading the wrong secret is worse than saying so.
+        message = (
+            "SECRET_ID is unset or empty. Set it in .env for local runs, or in the "
+            "task environment for the pipeline; it names the Secret Manager secret "
+            "holding a Gemini Developer API key."
+        )
+        raise RuntimeError(message)
+    return name
+
 
 #: House style, matching the diagrams already in docs/images/.
 STYLE = (
@@ -67,14 +98,26 @@ def api_key(project: str) -> str | None:
     the exit task, and the exit task is the only thing allowed to turn a run red
     — which it must do only for missing cells.
     """
+    # Resolved before the try: calling secret_id() inside the handler would
+    # re-raise when an unset SECRET_ID is the very thing that failed.
+    try:
+        configured = secret_id()
+    except RuntimeError as exc:
+        logger.warning("%s Skipping figures.", exc)
+        return None
+
     try:
         from google.cloud import secretmanager  # noqa: PLC0415
 
         client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project}/secrets/{SECRET_ID}/versions/latest"
+        name = f"projects/{project}/secrets/{configured}/versions/latest"
         return client.access_secret_version(request={"name": name}).payload.data.decode().strip()
     except Exception as exc:  # noqa: BLE001 - absent secret and denied access are both "skip"
-        logger.warning("No Gemini Developer API key (%s): skipping figures", type(exc).__name__)
+        logger.warning(
+            "No Gemini Developer API key in secret %r (%s): skipping figures",
+            configured,
+            type(exc).__name__,
+        )
         return None
 
 

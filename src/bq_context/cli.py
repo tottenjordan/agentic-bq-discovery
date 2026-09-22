@@ -81,12 +81,31 @@ def _root(
     """
     from bq_context.logging_setup import configure_logging  # noqa: PLC0415
 
+    _load_dotenv()
     configure_logging(verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def _load_dotenv() -> None:
+    """Load the repo-root `.env`, without overriding anything already set.
+
+    Called from the CLI entrypoint rather than at import, deliberately. Importing
+    this package must not read a developer's `.env` — `tests/conftest.py` pins a
+    fake environment precisely so nothing can pass by inheriting real settings,
+    and an import-time load would defeat it.
+
+    `override=False` for the same reason: an explicitly exported variable, or the
+    task environment in the pipeline container, always wins over the file. A
+    missing `.env` is a silent no-op, which is the normal case in the image.
+    """
+    from dotenv import load_dotenv  # noqa: PLC0415
+
+    # repo root: src/bq_context/cli.py -> src/bq_context -> src -> root
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
+
 def _config() -> ExperimentConfig:
     try:
         return ExperimentConfig.from_env()

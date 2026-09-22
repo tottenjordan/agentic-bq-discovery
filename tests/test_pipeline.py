@@ -201,3 +201,29 @@ def test_smoke_and_pilot_are_cheap() -> None:
     assert PROFILES["smoke"]["question_limit"] == 3
     assert PROFILES["pilot"]["question_limit"] == 5
     assert PROFILES["full"]["question_limit"] == 0, "0 means all 25"
+
+
+# ---------------------------------------------------------------------------
+# Output artifacts
+# ---------------------------------------------------------------------------
+def test_preflight_publishes_its_ladder_and_fingerprint(spec: dict[str, Any]) -> None:
+    """The enrichment ladder gates the whole experiment and used to exist only on
+    stdout. The fingerprint is what stops a corpus change returning cached cells."""
+    out = spec["components"]["comp-preflight"]["outputDefinitions"]
+    assert set(out["artifacts"]) == {"ladder", "tier_metrics"}
+    assert out["parameters"]["fingerprint"]["parameterType"] == "STRING"
+
+
+def test_finalize_publishes_its_results(spec: dict[str, Any]) -> None:
+    """An ExitHandler exit task cannot *read* handler outputs, but it can declare
+    its own — which is the only reason the report is reachable from the UI."""
+    out = spec["components"]["comp-finalize"]["outputDefinitions"]
+    assert {"merged", "report", "run_metrics"} <= set(out["artifacts"])
+
+
+def test_shards_are_keyed_on_the_corpus_as_well_as_the_code(spec: dict[str, Any]) -> None:
+    """Both inputs, or a changed corpus silently returns cells scored on the old one."""
+    shard = next(k for k in spec["components"] if "run-shard" in k)
+    params = spec["components"][shard]["inputDefinitions"]["parameters"]
+    assert "code_version" in params
+    assert "corpus_fingerprint" in params

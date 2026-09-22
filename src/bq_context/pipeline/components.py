@@ -118,7 +118,13 @@ def ensure_infra(project: str, out: str, skip: bool = False) -> None:
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
-def preflight(project: str, tier: int, baseline: int) -> Preflight:
+def preflight(
+    project: str,
+    tier: int,
+    baseline: int,
+    ladder: dsl.Output[dsl.Markdown],
+    tier_metrics: dsl.Output[dsl.Metrics],
+) -> Preflight:
     """Assert catalog enrichment is real, and publish the corpus fingerprint.
 
     The most important gate in the system. lookupContext returns an empty
@@ -155,14 +161,44 @@ def preflight(project: str, tier: int, baseline: int) -> Preflight:
     ]
     print("+ " + " ".join(args), flush=True)
     returncode = subprocess.run(args, check=False).returncode
-    if returncode != 0:
-        # Fail the task. No outputs are produced, which is correct: a fingerprint
-        # for a corpus that failed the gate would key shard cache to a corpus
-        # nobody should be running on.
-        raise SystemExit(returncode)
+
+    # Write the artifact even on the failure path. KFP creates only the *parent*
+    # directory of an artifact path, so leaving the file unwritten registers a
+    # system.Markdown pointing at nothing and the UI shows a dead link — on
+    # exactly the runs someone needs to read.
+    if not os.path.exists(payload_path):  # noqa: PTH110
+        with open(ladder.path, "w") as handle:  # noqa: PTH123
+            handle.write(f"# preflight\n\nExited {returncode}; no ladder produced.\n")
+        raise SystemExit(returncode or 1)
 
     with open(payload_path) as handle:  # noqa: PTH123
         payload = json.load(handle)
+
+    rows = payload["ladder"]
+    lines = [
+        f"# Enrichment ladder — tier {baseline} to {tier}",
+        "",
+        f"Corpus fingerprint `{payload['fingerprint']}`.",
+        "",
+        "| tier | tables | bytes | profiled cols | glossary cols | aspects |",
+        "|---|---|---|---|---|---|",
+    ]
+    lines += [
+        f"| {r['tier']} | {r['tables']} | {r['bytes']:,} | {r['profiled']} | "
+        f"{r['terms']} | {', '.join(r['aspects']) or '—'} |"
+        for r in rows
+    ]
+    with open(ladder.path, "w") as handle:  # noqa: PTH123
+        handle.write("\n".join(lines) + "\n")
+
+    # log_metric takes floats only, so `aspects` (a list) stays in the markdown.
+    for row in rows:
+        for field in ("tables", "bytes", "profiled", "terms"):
+            tier_metrics.log_metric(f"tier{row['tier']}_{field}", float(row[field]))
+
+    if returncode != 0:
+        raise SystemExit(returncode)
+
     print(f"corpus fingerprint {payload['fingerprint']}", flush=True)
     # Deliberately not the module-level Preflight: this body is extracted and run
     # standalone in the container, where that class does not exist. KFP matches on
@@ -256,6 +292,9 @@ def finalize(
     runs: int,
     tiers: list,
     approaches: list,
+    merged: dsl.Output[dsl.Dataset],
+    report: dsl.Output[dsl.Markdown],
+    run_metrics: dsl.Output[dsl.Metrics],
     require_complete: bool = True,
     question_limit: int = 0,
 ) -> None:
@@ -283,14 +322,16 @@ def finalize(
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
     base = ["--experiment-id", experiment_id, "--out", out]
 
-    merge = ["bq-context", "merge", *base, "--runs", str(runs)]
-    if question_limit:
-        # Must match what the shards ran, or merge reports phantom missing cells.
-        merge += ["--limit", str(question_limit)]
-    for tier in tiers:
-        merge += ["--tier", str(tier)]
-    for approach in approaches:
-        merge += ["--approach", str(approach)]
+    from bq_context.pipeline.publish import merge_args
+
+    merge = merge_args(
+        experiment_id,
+        out,
+        runs=runs,
+        tiers=tiers,
+        approaches=approaches,
+        question_limit=question_limit,
+    )
 
     # Give score and plot real destinations. Both flags already existed and were
     # simply never passed: score wrote markdown only with --report, and plot's
@@ -300,7 +341,7 @@ def finalize(
     import tempfile
 
     workdir = tempfile.mkdtemp(prefix="bq-context-finalize-")
-    report_path = f"{workdir}/report.md"
+    report_path = report.path
     plots_dir = f"{workdir}/plots"
 
     steps = (
@@ -317,34 +358,43 @@ def finalize(
     # Upload to the stable experiment prefix rather than a KFP artifact path.
     # Artifact URIs embed the pipeline job id and change every run; these are the
     # copies a human goes looking for weeks later.
-    import pathlib
-
+    from bq_context.pipeline.publish import merge_report, publish_figures, publish_report
     from bq_context.runner.resume import experiment_prefix
     from bq_context.runner.store import store_for
 
     store = store_for(out)
-    prefix = experiment_prefix(experiment_id)
-    if pathlib.Path(report_path).exists():
-        store.write_text(f"{prefix}/scoring/report.md", pathlib.Path(report_path).read_text())
-        print(f"report    {store.uri(f'{prefix}/scoring/report.md')}", flush=True)
-    for png in sorted(pathlib.Path(plots_dir).glob("*.png")):
-        store.write_bytes(f"{prefix}/plots/{png.name}", png.read_bytes(), "image/png")
-        print(f"figure    {store.uri(f'{prefix}/plots/{png.name}')}", flush=True)
+    if published := publish_report(store, experiment_id, report.path):
+        print(f"report    {store.uri(published)}", flush=True)
+    for figure in publish_figures(store, experiment_id, plots_dir):
+        print(f"figure    {store.uri(figure)}", flush=True)
+
+    # Populate every artifact *before* anything can raise. SystemExit propagates
+    # past KFP's executor before write_executor_output runs, so a raise here would
+    # discard every .uri and .metadata mutation — on precisely the red runs a
+    # human most wants to inspect.
+    if not os.path.exists(report.path):  # noqa: PTH110
+        with open(report.path, "w") as handle:  # noqa: PTH123
+            handle.write(f"# Results — {experiment_id}\n\nScoring produced no report.\n")
+
+    report_json = merge_report(store, experiment_id)
+    merged.uri = store.uri(f"{experiment_prefix(experiment_id)}/merged/results.jsonl")
+    merged.metadata.update(
+        {
+            "experiment_id": experiment_id,
+            "expected": report_json["expected"],
+            "present": report_json["present"],
+            "missing_count": report_json["missing_count"],
+        }
+    )
+    for key in ("expected", "present", "missing_count"):
+        run_metrics.log_metric(key, float(report_json[key]))
 
     if not require_complete:
         return
 
-    # Read the merge report rather than re-deriving: it is the single record of
-    # what the sweep actually produced.
-    import json
-
-    from bq_context.runner.store import store_for
-    from bq_context.scoring.merge import missing_path
-
     preview_limit = 20
-    report = json.loads(store_for(out).read_text(missing_path(experiment_id)))
-    missing = report["missing"]
-    print(f"{report['present']}/{report['expected']} cells present", flush=True)
+    missing = report_json["missing"]
+    print(f"{report_json['present']}/{report_json['expected']} cells present", flush=True)
     if missing:
         preview = "\n  ".join(missing[:preview_limit])
         suffix = (

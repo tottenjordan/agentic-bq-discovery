@@ -24,6 +24,8 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -33,12 +35,29 @@ os.environ.setdefault("BQ_CONTEXT_IMAGE", "us-central1-docker.pkg.dev/p/r/runner
 
 import pytest
 import typer
+from kfp import dsl
 
 from bq_context.cli import app
 from bq_context.pipeline import components
 
+
+def _artifact(kind: type, name: str) -> Any:
+    """A real KFP artifact backed by a scratch path.
+
+    Components write to `.path` and mutate `.metadata`, so a MagicMock would let
+    a broken write pass. These are the genuine classes pointed at a tempdir.
+    """
+    return kind(name=name, uri=str(Path(tempfile.mkdtemp()) / f"{name}.out"))
+
+
 #: Representative arguments for every component that shells out. Values only
 #: need to be well-formed; nothing here reaches GCP.
+#:
+#: The artifact entries are load-bearing. A component gaining a required
+#: `Output[...]` parameter without one here raises TypeError inside
+#: `contextlib.suppress(BaseException)` below, so nothing is captured and only
+#: `test_every_component_shells_out_at_least_once` fails — pointing at the
+#: harness rather than the cause.
 COMPONENT_ARGS: dict[str, dict[str, Any]] = {
     "validate_config": {
         "project": "p",
@@ -46,7 +65,13 @@ COMPONENT_ARGS: dict[str, dict[str, Any]] = {
         "expect_identity": "sa@p.iam.gserviceaccount.com",
     },
     "ensure_infra": {"project": "p", "out": "gs://b/e"},
-    "preflight": {"project": "p", "tier": 3, "baseline": 0},
+    "preflight": {
+        "project": "p",
+        "tier": 3,
+        "baseline": 0,
+        "ladder": _artifact(dsl.Markdown, "ladder"),
+        "tier_metrics": _artifact(dsl.Metrics, "tier_metrics"),
+    },
     "run_shard": {
         "project": "p",
         "experiment_id": "e",
@@ -63,6 +88,9 @@ COMPONENT_ARGS: dict[str, dict[str, Any]] = {
         "runs": 5,
         "tiers": [0, 3],
         "approaches": ["bq_tools"],
+        "merged": _artifact(dsl.Dataset, "merged"),
+        "report": _artifact(dsl.Markdown, "report"),
+        "run_metrics": _artifact(dsl.Metrics, "run_metrics"),
     },
 }
 

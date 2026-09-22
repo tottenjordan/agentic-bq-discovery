@@ -157,6 +157,32 @@ producing the value so the knowledge is in one place. Found by writing callback
 tests, not by reading the results: the cells scored correctly, they just burned
 a Gemini call each.
 
+## Per-shard facts are now durable
+
+`ShardResult` was returned in memory, printed by `run-shard`, and dropped — its
+docstring claimed it was "written alongside its attempt files" and it was not.
+It now is: `shards/<id>/summary-NNNN.json`, one per attempt so a resume does not
+overwrite the record of why it was resumed.
+
+That mattered for two fields. `cache_warm_s` is the number the design named as
+the one that would flip the sharding topology decision, and answering it for
+this run meant scraping Cloud Logging:
+
+```
+n=54  min=1.2s  median=1.9s  max=3.7s
+12 cache-using shards x median = 23s per sweep, against a 120s threshold
+```
+
+**Per-shard warming is free** — the 24-shard topology is correct by roughly a
+factor of 60, and that question is closed. `abort_reason` is the other: for a
+shard the circuit breaker stopped, that string is the entire diagnosis, and it
+only ever reached a console.
+
+`merge` now prints the cache-warm spread and shouts about any aborted shard.
+`Cell.cache_warm_s` remains dead and is documented as such in the BigQuery
+column description — warm happens once per shard, so attributing it to 125 cells
+would invite a `SUM()` that overstates it 125-fold.
+
 ## Provenance and caveats from the resume
 
 **The dataset is built from two code versions.** 2,993 cells were produced by

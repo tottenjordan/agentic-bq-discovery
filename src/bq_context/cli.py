@@ -812,8 +812,38 @@ def merge(
         preview = ", ".join(result.missing[:5])
         typer.secho(f"missing (first 5): {preview}", fg=typer.colors.YELLOW, err=True)
 
+    _report_shard_health(experiment_id, store)
+
     if bigquery and out.startswith("gs://"):
         _publish_to_bigquery(experiment_id, store)
+
+
+def _report_shard_health(experiment_id: str, store: ArtifactStore) -> None:
+    """Summarise the per-shard records, if the run wrote any.
+
+    Surfaces the two things that otherwise only exist in a log nobody tails: a
+    shard the circuit breaker aborted, and how long cache warm actually took —
+    the number that decides whether per-shard warming is affordable.
+    """
+    from bq_context.runner.summaries import load_summaries  # noqa: PLC0415
+
+    summaries = load_summaries(store, experiment_id)
+    if not summaries:
+        return  # a run made before summaries existed; not a problem
+
+    warms = sorted(s.cache_warm_s for s in summaries if s.cache_warm_s)
+    if warms:
+        typer.echo(
+            f"cache warm        {len(warms)} shard(s), "
+            f"median {warms[len(warms) // 2]:.1f}s, max {warms[-1]:.1f}s"
+        )
+    for summary in summaries:
+        if summary.aborted:
+            typer.secho(
+                f"ABORTED {summary.shard_id}: {summary.abort_reason}",
+                fg=typer.colors.RED,
+                err=True,
+            )
 
 
 def _publish_to_bigquery(experiment_id: str, store: ArtifactStore) -> None:

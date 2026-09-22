@@ -10,6 +10,7 @@ dependencies = [
     "google-cloud-bigquery>=3.45.2",
     "google-cloud-dataplex>=2.20.0",
     "google-cloud-resource-manager>=1.18.0",
+    "google-cloud-secret-manager>=2.30,<3",
     "google-cloud-storage>=3.14.1",
     "google-genai>=2.24.0",
     "kfp==2.17.0",

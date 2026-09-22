@@ -38,8 +38,9 @@ notes.
   returns **empty rather than 403** on missing permissions; parentheses silently break search
   scoping; the three different locations catalog resources must live in; quotas.
 - [The pipeline service account](gcp/pipeline-service-account.md) — the grant set, why
-  `--impersonate` is the only meaningful way to check it, and confirmation that the SA reads
-  catalog context identically to a near-Owner account.
+  `--impersonate` is the only meaningful way to check it, confirmation that the SA reads
+  catalog context identically to a near-Owner account, and why the Secret Manager permission
+  is checked against the **secret**, not the project.
 - [What `lookupContext` actually returns](gcp/lookup-context-capsule.md) — glossary definitions
   arrive **per-column under `terms`**; the default capsule truncates schemas to 25 columns;
   `all_schema_fields=true` works and the budget keys do nothing.

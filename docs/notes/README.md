@@ -12,7 +12,7 @@ notes.
 - A note describes what was true when written. Re-verify any file, flag, or
   command it names before acting on it.
 - Only record what outlives the conversation and isn't recoverable from the
-  repo, git history, `CLAUDE.md`, or existing docs. Favor the non-obvious:
+  repo, git history, the agent docs (`CLAUDE.md` / `GEMINI.md`), or existing docs. Favor the non-obvious:
   broken tooling, environment quirks, workarounds.
 
 ## Notes

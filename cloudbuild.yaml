@@ -1,0 +1,59 @@
+# Build the runner image and verify it before tagging it as usable.
+#
+# The verify steps are not ceremony. The most common way this image breaks is
+# the PATH line in the Dockerfile: without it KFP's injected `python3` resolves
+# to the system interpreter and every component dies with a bare
+# ModuleNotFoundError (confirmed empirically — see docs/notes/). That failure is
+# invisible until a pipeline runs, ten minutes and a container pull later.
+# Importing the three packages here catches it in seconds, at build time.
+#
+#   gcloud builds submit --region=us-central1 --config cloudbuild.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD)
+#
+# NB: $PROJECT_ID cannot be nested inside a user substitution's default value —
+# Cloud Build does not expand substitutions recursively, and a step `name`
+# containing a literal ${PROJECT_ID} fails to parse. Hence the full path inline.
+
+substitutions:
+  _TAG: latest
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:${_TAG}
+      - --tag=us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:cache
+      - --cache-from=us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:cache
+      - .
+
+  # Prove the venv is on PATH and the project imports as the KFP executor will
+  # invoke it: bare `python3`, not `uv run`.
+  - id: verify-imports
+    name: us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:${_TAG}
+    entrypoint: python3
+    args:
+      - -c
+      - |
+        import sys, kfp, google.adk, bq_context
+        from bq_context.runner.cells import APPROACHES
+        assert sys.executable.startswith("/app/.venv/"), sys.executable
+        assert len(APPROACHES) == 6, APPROACHES
+        print("ok:", sys.executable, "| kfp, google.adk, bq_context importable")
+
+  # The CLI must also resolve as a console script, since components shell out to
+  # it rather than importing it.
+  - id: verify-cli
+    name: us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:${_TAG}
+    entrypoint: bq-context
+    args: [plan-shards, --experiment-id, buildcheck, --tier, "3", --approach, search_direct]
+
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:${_TAG}
+  - us-central1-docker.pkg.dev/$PROJECT_ID/bq-context/runner:cache
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s

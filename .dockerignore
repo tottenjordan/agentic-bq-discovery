@@ -1,0 +1,33 @@
+# The build context is uploaded to Cloud Build, so anything listed here is
+# bandwidth and build time saved. .venv alone is well over a gigabyte.
+.venv/
+.git/
+.github/
+
+# Caches
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.ty_cache/
+.coverage
+htmlcov/
+
+# Not needed at runtime. Tests and their fixtures are dev-only, and
+# fixtures/upstream_results.json.gz is 125 KB of benchmark data the image
+# never reads.
+tests/
+docs/
+experiments/upstream_baseline/
+
+# Build artifacts and local scratch
+dist/
+build/
+*.egg-info/
+plots/
+scratch/
+local_results/
+
+# Secrets
+.env
+.env.*

@@ -43,6 +43,9 @@ notes.
 
 ### Tooling
 
+- [The runner container](container.md) — why `ENV PATH=/app/.venv/bin` is the whole KFP
+  integration (confirmed by breaking it), two corrections to the plan, and the fact that Cloud
+  Build substitutions do not nest.
 - [KFP prior art at `/home/user/novastorm`](prior-art-novastorm-kfp.md) — never commit pipeline
   YAML (with the drift incident that proves it), and measured uv-in-Docker cold-start fixes.
 

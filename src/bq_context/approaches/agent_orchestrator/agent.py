@@ -15,7 +15,7 @@ from bq_context.approaches.agent_kc_context.agent import root_agent as kc_contex
 from bq_context.approaches.agent_kc_search.agent import root_agent as kc_search_agent
 from bq_context.approaches.agent_search_direct.agent import root_agent as search_direct_agent
 from bq_context.approaches.agent_semantic_context.agent import root_agent as semantic_context_agent
-from bq_context.runtime import default_config
+from bq_context.runtime import agent_model
 
 from . import prompts
 from .callback_build_comparison import build_comparison
@@ -37,7 +37,7 @@ parallel_discovery = agents.ParallelAgent(
 # Step 2: Compare results from all six approaches
 compare_agent = agents.Agent(
     name="compare_results",
-    model=default_config().agent_model,
+    model=agent_model(),
     description="Compares and synthesizes results from all six discovery approaches.",
     global_instruction=prompts.global_instructions,
     instruction=prompts.compare_agent_instructions,

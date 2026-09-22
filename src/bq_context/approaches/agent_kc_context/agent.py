@@ -18,14 +18,14 @@ enrichments are present.
 
 from google.adk import agents
 
-from bq_context.runtime import default_config
+from bq_context.runtime import agent_model
 
 from . import prompts
 from .tools import discover_and_rerank
 
 root_agent = agents.Agent(
     name="agent_kc_context",
-    model=default_config().agent_model,
+    model=agent_model(),
     description=(
         "Discovers relevant BigQuery tables using pre-loaded Knowledge Context "
         "capsules from the Knowledge Catalog lookupContext API, then reranks "

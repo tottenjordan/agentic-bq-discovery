@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 __all__ = [
     "NoTierContextError",
     "TierContext",
+    "agent_model",
     "current_tier",
     "default_config",
     "get_datasets",
@@ -41,6 +42,41 @@ __all__ = [
     "is_table_in_scope",
     "tier_scope",
 ]
+
+
+@cache
+def agent_model() -> object:
+    """The agent model, configured with its own retry.
+
+    Load-bearing, and learned the hard way. Our jittered backoff wraps
+    ``call_reranker`` — the Gemini calls *we* make. But ADK builds and drives
+    its own client for an LLM-driven agent, and those calls bypass our retry
+    entirely. Passing a bare model string leaves them with no retry at all.
+
+    The first full 3,000-cell run lost 7 cells to ``429 RESOURCE_EXHAUSTED``,
+    and every one was ``bq_tools`` or ``context_prefilter`` — the only two
+    approaches that reach the agent LLM. The other four never touch that path,
+    which is why the gap stayed invisible through every smoke and pilot run.
+
+    Settings mirror ``RetryPolicy`` in ``runner.backoff`` so both Gemini paths
+    behave the same: 8 attempts, 1s base, doubling, capped at 64s, jittered.
+    Jitter matters against Dynamic Shared Quota — eight shards retrying in
+    lockstep re-collide at exactly the wrong moment.
+    """
+    from google.adk.models.google_llm import Gemini  # noqa: PLC0415
+    from google.genai import types  # noqa: PLC0415
+
+    return Gemini(
+        model=default_config().agent_model,
+        retry_options=types.HttpRetryOptions(
+            attempts=8,
+            initial_delay=1.0,
+            max_delay=64.0,
+            exp_base=2.0,
+            jitter=1.0,
+            http_status_codes=[429, 500, 502, 503, 504],
+        ),
+    )
 
 
 @cache

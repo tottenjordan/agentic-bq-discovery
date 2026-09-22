@@ -14,14 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bq_context.scoring.figures import (
-    DEFAULT_SECRET_ID,
-    DIAGRAMS,
-    STYLE,
-    api_key,
-    generate,
-    secret_id,
-)
+from bq_context.scoring.figures import DIAGRAMS, STYLE, api_key, generate, secret_id
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -92,20 +85,47 @@ def test_the_secret_name_comes_from_the_environment(monkeypatch: pytest.MonkeyPa
     assert secret_id() == "some-other-secret"
 
 
-def test_it_falls_back_to_the_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """There is no `.env` in the runner image, so the default has to be usable."""
+def test_an_unset_secret_id_is_an_error_not_a_guess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No fallback, deliberately. A default would be a name invented in code that
+    nobody configured, and silently reading the wrong secret is worse than saying
+    so — especially in the pipeline, where there is no `.env`."""
     monkeypatch.delenv("SECRET_ID", raising=False)
-    assert secret_id() == DEFAULT_SECRET_ID
+    with pytest.raises(RuntimeError, match="SECRET_ID"):
+        secret_id()
 
 
 @pytest.mark.parametrize("value", ["", "   ", "\n"])
-def test_a_blank_value_falls_back_rather_than_querying_an_empty_name(
+def test_a_blank_value_is_rejected_rather_than_building_an_empty_path(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """`SECRET_ID=` in a .env is easy to write and would otherwise build the path
+    """`SECRET_ID=` is easy to write in a .env, and would otherwise resolve to
     `projects/p/secrets//versions/latest`, which fails obscurely."""
     monkeypatch.setenv("SECRET_ID", value)
-    assert secret_id() == DEFAULT_SECRET_ID
+    with pytest.raises(RuntimeError, match="SECRET_ID"):
+        secret_id()
+
+
+def test_the_error_says_where_to_set_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A config error is only useful if it names the fix."""
+    monkeypatch.delenv("SECRET_ID", raising=False)
+    with pytest.raises(RuntimeError) as err:
+        secret_id()
+    assert ".env" in str(err.value)
+    assert "Secret Manager" in str(err.value)
+
+
+def test_a_missing_secret_id_skips_figures_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """api_key runs inside the exit task, which may only turn a run red for
+    missing cells. An unset SECRET_ID must degrade to "no figures", not a crash —
+    and the handler must not re-call secret_id(), which would raise again."""
+    import logging
+
+    monkeypatch.delenv("SECRET_ID", raising=False)
+    with caplog.at_level(logging.WARNING):
+        assert api_key("hybrid-vertex") is None
+    assert "SECRET_ID" in caplog.text
 
 
 def test_it_is_read_at_call_time_not_import_time(monkeypatch: pytest.MonkeyPatch) -> None:

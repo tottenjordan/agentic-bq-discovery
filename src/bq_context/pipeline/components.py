@@ -49,7 +49,7 @@ RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
-def validate_config(project: str, out: str, service_account: str = "") -> None:
+def validate_config(project: str, out: str, expect_identity: str = "") -> None:
     """Fail fast on identity, permissions, models, and storage.
 
     Runs first and retries zero times. Thirty seconds here beats discovering a
@@ -62,8 +62,11 @@ def validate_config(project: str, out: str, service_account: str = "") -> None:
 
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
     args = ["bq-context", "validate-config", "--out", out]
-    if service_account:
-        args += ["--impersonate", service_account]
+    if expect_identity:
+        # Assert, do not impersonate. This task already runs as the service
+        # account, so --impersonate would ask it to impersonate itself and fail
+        # with "Permission 'iam.serviceAccounts.getAccessToken' denied".
+        args += ["--expect-identity", expect_identity]
     print("+ " + " ".join(args), flush=True)
     sys.exit(subprocess.run(args, check=False).returncode)
 
@@ -95,22 +98,22 @@ def ensure_infra(project: str, skip: bool = False) -> None:
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
-def preflight(project: str, tier: int, baseline: int, service_account: str = "") -> None:
+def preflight(project: str, tier: int, baseline: int) -> None:
     """Assert catalog enrichment is real before any measurement runs.
 
-    The most important gate in the system, and the reason it runs as the
-    pipeline service account: lookupContext returns an empty response rather
-    than 403 on missing permissions, so a privileged developer account reads
-    context fine while the SA silently reads nothing.
+    The most important gate in the system. lookupContext returns an empty
+    response rather than 403 on missing permissions, so a privileged developer
+    account reads context fine while the SA silently reads nothing — and here
+    the task *is* the SA, so this is the real test.
     """
     import os
     import subprocess
     import sys
 
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
+    # No --impersonate: the task already runs as the pipeline service account,
+    # which is exactly the identity this gate needs to exercise.
     args = ["bq-context", "preflight", "--tier", str(tier), "--baseline", str(baseline)]
-    if service_account:
-        args += ["--impersonate", service_account]
     print("+ " + " ".join(args), flush=True)
     sys.exit(subprocess.run(args, check=False).returncode)
 

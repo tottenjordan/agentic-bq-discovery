@@ -85,7 +85,7 @@ def bq_context_pipeline(
     resubmitting with the same value resumes rather than restarting. Never
     derive it from a timestamp inside the pipeline.
     """
-    validate = components.validate_config(project=project, out=out, service_account=service_account)
+    validate = components.validate_config(project=project, out=out, expect_identity=service_account)
     validate.set_display_name("validate config")
     validate.set_retry(num_retries=0)
 
@@ -100,9 +100,7 @@ def bq_context_pipeline(
     infra.after(validate)
     infra.set_caching_options(enable_caching=False)
 
-    check = components.preflight(
-        project=project, tier=3, baseline=0, service_account=service_account
-    )
+    check = components.preflight(project=project, tier=3, baseline=0)
     check.set_display_name("preflight: enrichment is real")
     check.set_retry(num_retries=0)
     check.after(infra)

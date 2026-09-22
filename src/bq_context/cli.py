@@ -16,6 +16,7 @@ a pipeline failure can always be reproduced locally with one command.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import logging
@@ -246,6 +247,27 @@ def _credentials(impersonate: str) -> Credentials | None:
     )
 
 
+def _effective_identity(credentials: Credentials | None) -> str:
+    """Best-effort principal for the credentials in use.
+
+    Inside a pipeline task there is nothing to impersonate — the task already
+    *is* the service account — so the useful question is "who am I?" rather than
+    "can I become someone else?".
+    """
+    import google.auth  # noqa: PLC0415
+    import google.auth.transport.requests  # noqa: PLC0415
+
+    creds = credentials
+    if creds is None:
+        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    email = getattr(creds, "service_account_email", "") or ""
+    if not email:
+        with contextlib.suppress(Exception):
+            creds.refresh(google.auth.transport.requests.Request())  # type: ignore[union-attr]
+            email = getattr(creds, "service_account_email", "") or ""
+    return email
+
+
 def _check_permissions(project: str, credentials: Credentials | None) -> list[str]:
     """Return the required permissions the caller is missing."""
     from google.cloud import resourcemanager_v3  # noqa: PLC0415
@@ -288,8 +310,16 @@ def validate_config(
         str,
         typer.Option(
             "--impersonate",
-            help="Service account to check as. Use this to test the pipeline SA "
-            "rather than your own near-Owner ADC identity.",
+            help="Service account to check as. For LOCAL use: inside a pipeline "
+            "the task already is the SA, so use --expect-identity instead.",
+        ),
+    ] = "",
+    expect_identity: Annotated[
+        str,
+        typer.Option(
+            "--expect-identity",
+            help="Fail unless the effective principal matches. Use this in the "
+            "pipeline, where impersonating yourself is a 403.",
         ),
     ] = "",
 ) -> None:
@@ -305,7 +335,8 @@ def validate_config(
     config = _config()
     loc = config.locations
     credentials = _credentials(impersonate)
-    typer.echo(f"identity           {impersonate or 'ADC (your own credentials)'}")
+    identity = _effective_identity(credentials)
+    typer.echo(f"identity           {identity or '(ADC, principal not resolvable)'}")
     typer.echo(f"project            {config.project}")
     typer.echo(f"agent model        {config.agent_model}")
     typer.echo(f"tool model         {config.tool_model}")
@@ -321,6 +352,13 @@ def validate_config(
         typer.echo(f"{name:<19}{value}")
 
     problems: list[str] = []
+
+    if expect_identity and identity != expect_identity:
+        problems.append(
+            f"running as {identity or '<unknown>'}, expected {expect_identity}. "
+            "Vertex silently falls back to the Compute Engine default service "
+            "account when service_account= is omitted on the PipelineJob."
+        )
 
     # The models are global-endpoint only; a regional client returns 404.
     if loc.gemini != "global":
@@ -443,7 +481,11 @@ def preflight(
     baseline: BaselineOpt = 0,
     impersonate: Annotated[
         str,
-        typer.Option("--impersonate", help="Check as this service account instead of ADC."),
+        typer.Option(
+            "--impersonate",
+            help="Check as this service account. LOCAL use only; inside a "
+            "pipeline the task already is the SA.",
+        ),
     ] = "",
 ) -> None:
     """Assert catalog enrichment is real before any measurement runs.
@@ -459,7 +501,7 @@ def preflight(
     # empty response rather than 403 on missing permissions, so a developer ADC
     # account reads context fine while the SA silently reads nothing.
     credentials = _credentials(impersonate)
-    typer.echo(f"identity: {impersonate or 'ADC (your own credentials)'}")
+    typer.echo(f"identity: {_effective_identity(credentials) or '(ADC)'}")
 
     from google.api_core.exceptions import NotFound  # noqa: PLC0415
 

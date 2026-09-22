@@ -173,3 +173,40 @@ def test_full_is_the_published_factorial() -> None:
 def test_profiles_do_not_set_parallelism() -> None:
     """KFP requires it as a compile-time constant, so it lives in dag.PARALLELISM."""
     assert all("parallelism" not in p for p in PROFILES.values())
+
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+def test_pipeline_asserts_identity_rather_than_impersonating() -> None:
+    """Regression from the first real pipeline run, which failed here.
+
+    A pipeline task already runs *as* the service account. Passing
+    --impersonate <that same SA> asks it to impersonate itself, which needs
+    iam.serviceAccounts.getAccessToken on itself and fails 403. The useful check
+    inside a pipeline is the opposite: assert we *are* the expected principal,
+    which also catches Vertex silently falling back to the Compute Engine
+    default SA when service_account= is omitted.
+    """
+    source = Path(components.__file__).read_text()  # type: ignore[arg-type]
+    assert '"--expect-identity"' in source
+    # The quoted form is the flag being passed; the bare word also appears in
+    # comments explaining why it must not be.
+    assert '"--impersonate"' not in source, "a pipeline task cannot impersonate itself"
+
+
+def test_preflight_component_takes_no_service_account(spec: dict[str, Any]) -> None:
+    """It runs as the SA already; that is precisely what makes the gate real."""
+    params = _tasks(spec)["preflight"]["inputs"]["parameters"]
+    assert "service_account" not in params
+    assert set(params) == {"project", "tier", "baseline"}
+
+
+# ---------------------------------------------------------------------------
+# Profiles carry a question limit
+# ---------------------------------------------------------------------------
+def test_smoke_and_pilot_are_cheap() -> None:
+    """Without a limit the smoke profile inherits all 25 questions: 150 cells."""
+    assert PROFILES["smoke"]["question_limit"] == 3
+    assert PROFILES["pilot"]["question_limit"] == 5
+    assert PROFILES["full"]["question_limit"] == 0, "0 means all 25"

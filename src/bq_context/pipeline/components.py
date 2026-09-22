@@ -280,8 +280,29 @@ def run_shard(
     ]
     if question_limit:
         args += ["--limit", str(question_limit)]
+
+    from bq_context.logging_setup import json_log
+
+    json_log(
+        "INFO",
+        "shard starting",
+        shard_id=f"tier{tier}__{approach}",
+        experiment_id=experiment_id,
+        tier=tier,
+        approach=approach,
+        code_version=code_version,
+        corpus_fingerprint=corpus_fingerprint,
+    )
     print("+ " + " ".join(args), flush=True)
-    sys.exit(subprocess.run(args, check=False).returncode)
+    returncode = subprocess.run(args, check=False).returncode
+    json_log(
+        "INFO" if returncode == 0 else "ERROR",
+        "shard finished",
+        shard_id=f"tier{tier}__{approach}",
+        experiment_id=experiment_id,
+        returncode=returncode,
+    )
+    sys.exit(returncode)
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)

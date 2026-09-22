@@ -67,6 +67,7 @@ RUN uv sync --frozen --no-dev \
 # GOOGLE_CLOUD_LOCATION is the *model endpoint*: gemini-3.x flash models return
 # 404 in us-central1 and 200 at global.
 ENV PATH="/app/.venv/bin:$PATH" \
+    BQ_CONTEXT_LOG_FORMAT=json \
     GOOGLE_GENAI_USE_VERTEXAI=true \
     GOOGLE_CLOUD_PROJECT=hybrid-vertex \
     GOOGLE_CLOUD_LOCATION=global

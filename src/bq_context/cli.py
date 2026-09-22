@@ -19,9 +19,7 @@ from __future__ import annotations
 import contextlib
 import itertools
 import json
-import logging
 import subprocess
-import sys
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -81,11 +79,9 @@ def _root(
     Typer collapses a single-command app into a bare CLI; an explicit callback
     pins the subcommand form regardless of how many commands are registered.
     """
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    from bq_context.logging_setup import configure_logging  # noqa: PLC0415
+
+    configure_logging(verbose=verbose)
 
 
 # ---------------------------------------------------------------------------

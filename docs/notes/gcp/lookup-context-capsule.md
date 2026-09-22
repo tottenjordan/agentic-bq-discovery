@@ -67,6 +67,23 @@ Roughly **1.8× the capsule**, and therefore ~1.8× the reranker prompt tokens f
 the three context-consuming approaches. `kc_context` ships the whole corpus
 capsule per cell, so it feels this most.
 
+## Which tables actually lose links
+
+Re-verified live on 2026-09-22 at tier 3. The loss is not spread thin — it is
+two tables, and one of them loses everything:
+
+| table | capsule cols | links wanted | reach capsule | with `all_schema_fields` |
+|---|---|---|---|---|
+| `hurricanes` | 25 *(of 153)* | 5 | **0** | 5 |
+| `air_quality_annual_summary` | 25 | 2 | **1** | 2 |
+| the other 7 linked tables | 10–20 | 17 | 17 | 17 |
+| **total** | | **24** | **18** | **24** |
+
+`hurricanes` contributes **zero** glossary signal to tiers 2 and 3 while
+appearing fully enriched in every count taken from the catalog rather than the
+capsule. Any table whose schema exceeds 25 columns is in the same position, so
+this scales with corpus width, not corpus size.
+
 ## The open decision
 
 Turning it on is **not** an obvious win, because it trades one confound for a
@@ -84,6 +101,29 @@ cost:
 Reasonable split: run the reproduction with it **off** (comparable to upstream),
 and any extension with it **on**. That way the reproduction stays honest and the
 extension stays sound.
+
+## Provisioning is complete — verified 2026-09-22
+
+Checked against the live catalog, not the setup log:
+
+| resource | expected | actual |
+|---|---|---|
+| tier datasets / views | 4 / 60 | 4 / 60 |
+| DataScans | 45 | **45/45** |
+| glossary | 1 | present |
+| glossary terms | 11 | **11/11** |
+| definition entry links | 48 (24 × tiers 2–3) | 48 requested |
+| table-level aspects at tier 3 | 4 | **4/4** |
+
+The tier-3 aspect covers only **4 of 15 tables** — `austin_bikeshare_trips`,
+`nyc_taxi_trips_2022`, `county_natality`, `air_quality_annual_summary`. That is
+upstream's design, not a gap: `GUIDELINES` is defined for those four. Spot-
+checking any other tier-3 table finds no aspect and is not evidence of a
+problem.
+
+`guidelines` vs `overview` re-confirmed the same day: `dataplex.aspectTypes.get`
+still 403s on Google's `dataplex-types` project while `overview` reads fine, so
+the fallback remains correct and is not an IAM gap to chase.
 
 ## Why this was missed
 

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+from bq_context.runner.backoff import CircuitBreaker
 from bq_context.runner.models import Cell, ShardResult
 from bq_context.runner.resume import (
     completed_keys,
@@ -82,6 +83,7 @@ class ShardRunner:
         upload_every_seconds: float = UPLOAD_EVERY_SECONDS,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
         cache_warm_s: float = 0.0,
+        breaker: CircuitBreaker | None = None,
     ) -> None:
         self.spec = spec
         self.store = store
@@ -91,6 +93,8 @@ class ShardRunner:
         self.upload_every_seconds = upload_every_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self.cache_warm_s = cache_warm_s
+        self.breaker = breaker if breaker is not None else CircuitBreaker()
+        self._abort_reason = ""
 
         self._buffer: Path | None = None
         self._attempt_path = ""
@@ -186,7 +190,7 @@ class ShardRunner:
                         await heartbeat
                     self._upload()
 
-        self._write_marker(success=self._failed == 0)
+        self._write_marker(success=self._failed == 0 and not self._abort_reason)
         return self._result(planned=len(planned), already_done=len(finished))
 
     async def _run_cells(self, todo: list[str]) -> None:
@@ -199,9 +203,25 @@ class ShardRunner:
             self._append(cell)
             self._done += 1
             self._since_upload += 1
-            if cell.status != "ok":
+            ok = cell.status == "ok"
+            if not ok:
                 self._failed += 1
             self._maybe_upload()
+
+            self.breaker.record(ok=ok)
+            if self.breaker.tripped:
+                # Stop early, but keep everything finished so far. Without this,
+                # a shard broken by bad IAM would spend its whole retry budget
+                # rediscovering the same failure.
+                self._abort_reason = self.breaker.reason
+                logger.error(
+                    "[%s] circuit breaker tripped: %s — abandoning shard after %d/%d cells",
+                    self.spec.shard_id,
+                    self.breaker.reason,
+                    self._done,
+                    self._total,
+                )
+                return
 
     async def _execute_one(self, key: str, question: Mapping[str, object], run_idx: int) -> Cell:
         """Run one cell, converting an unexpected exception into an error cell.
@@ -256,10 +276,10 @@ class ShardRunner:
 
     def _write_marker(self, *, success: bool) -> None:
         name = "_SUCCESS" if success else "_FAILED"
-        self.store.write_text(
-            f"{shard_prefix(self.spec)}/{name}",
-            f"{self._done - self._failed} ok, {self._failed} failed\n",
-        )
+        body = f"{self._done - self._failed} ok, {self._failed} failed"
+        if self._abort_reason:
+            body += f"\naborted: {self._abort_reason}"
+        self.store.write_text(f"{shard_prefix(self.spec)}/{name}", body + "\n")
 
     def _result(self, *, planned: int, already_done: int) -> ShardResult:
         return ShardResult(
@@ -273,6 +293,8 @@ class ShardRunner:
             executed=self._done,
             succeeded=self._done - self._failed,
             failed=self._failed,
+            aborted=bool(self._abort_reason),
+            abort_reason=self._abort_reason,
             cache_warm_s=self.cache_warm_s,
             elapsed_s=round(time.monotonic() - self._started, 3),
             attempt_path=self._attempt_path,

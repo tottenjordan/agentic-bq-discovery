@@ -19,9 +19,7 @@ from __future__ import annotations
 import contextlib
 import itertools
 import json
-import logging
 import subprocess
-import sys
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -81,11 +79,9 @@ def _root(
     Typer collapses a single-command app into a bare CLI; an explicit callback
     pins the subcommand form regardless of how many commands are registered.
     """
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    from bq_context.logging_setup import configure_logging  # noqa: PLC0415
+
+    configure_logging(verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +622,10 @@ def preflight(
             "pipeline the task already is the SA.",
         ),
     ] = "",
+    json_out: Annotated[
+        Path | None,
+        typer.Option("--json", help="Also write the ladder and corpus fingerprint here."),
+    ] = None,
 ) -> None:
     """Assert catalog enrichment is real before any measurement runs.
 
@@ -698,6 +698,20 @@ def preflight(
             typer.secho(f"FAIL  {problem}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
+    from bq_context.runner.planner import corpus_fingerprint  # noqa: PLC0415
+
+    fingerprint = corpus_fingerprint(ladder)
+    typer.echo(f"corpus fingerprint  {fingerprint}")
+
+    if json_out is not None:
+        # Written only once the gate has passed: a fingerprint for a corpus that
+        # failed preflight would key shard cache to a corpus nobody should run on.
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(
+            json.dumps({"ladder": ladder, "fingerprint": fingerprint}, indent=2) + "\n"
+        )
+        typer.echo(f"wrote {json_out}", err=True)
+
     gained = ladder[-1]["bytes"] - ladder[0]["bytes"]
     typer.secho(
         f"\nOK — tier {tier} carries {gained:,} bytes more context than tier {baseline}.",
@@ -721,6 +735,15 @@ def run_shard(
         typer.Option("--limit", min=0, help="Use only the first N questions. 0 means all."),
     ] = 0,
     code_version: Annotated[str, typer.Option("--code-version")] = "",
+    corpus_fingerprint: Annotated[
+        str,
+        typer.Option(
+            "--corpus-fingerprint",
+            help="Enrichment shape this shard ran against, from `preflight --json`. "
+            "Recorded as provenance; the pipeline also passes it so a corpus "
+            "change invalidates the KFP shard cache.",
+        ),
+    ] = "",
 ) -> None:
     """Run every cell for one (tier, approach) pair. Resumable."""
     config = _config()
@@ -750,6 +773,7 @@ def run_shard(
         question_ids=chosen,
         runs=runs,
         code_version=code_version or _code_version(),
+        corpus_fingerprint=corpus_fingerprint,
     )
 
     from bq_context.runner.cells import execute_shard  # noqa: PLC0415
@@ -899,6 +923,87 @@ def score(
 
 
 @app.command()
+def figures(
+    out_dir: Annotated[Path, typer.Option("--dir", help="Where to write the PNGs.")] = Path(
+        "figures"
+    ),
+) -> None:
+    """Generate architecture diagrams with PaperBanana. Off the default path.
+
+    Diagrams only — never the data charts. `discovery_vs_final`, `recall_vs_tier`
+    and `latency_cost` plot measured numbers, and a generative image model
+    producing bars whose heights are not derived from the data would be a
+    correctness hazard. Those stay in matplotlib.
+
+    Skips with a message rather than failing when the Gemini Developer API key is
+    absent: this runs inside the exit task, which must only turn a run red for
+    missing cells.
+    """
+    from bq_context.scoring.figures import generate  # noqa: PLC0415
+
+    written = generate(_config().project, out_dir)
+    if not written:
+        typer.secho(
+            "No figures generated (no API key, or PaperBanana absent).", fg=typer.colors.YELLOW
+        )
+        return
+    for path in written:
+        typer.echo(str(path))
+
+
+@app.command()
+def report(
+    experiment_id: ExperimentId,
+    out: OutOpt = DEFAULT_OUT,
+    html_out: Annotated[Path, typer.Option("--html", help="Write the report here.")] = Path(
+        "executive.html"
+    ),
+    figures_dir: Annotated[
+        Path | None, typer.Option("--figures", help="PNGs to inline, e.g. from `plot`.")
+    ] = None,
+) -> None:
+    """Render the executive report: numbers, figures, and the caveats that apply.
+
+    Separate from `score` because it carries interpretation, not just metrics. The
+    caveats are the point — a flat tier response looks the same whether enrichment
+    does nothing, the corpus is too easy to show it, or lookupContext silently
+    returned nothing, and only the caveats distinguish those.
+    """
+    from bq_context.runner.summaries import load_summaries  # noqa: PLC0415
+    from bq_context.scoring.executive import (  # noqa: PLC0415
+        convergence_from_cells,
+        render_html,
+    )
+    from bq_context.scoring.merge import load_merged  # noqa: PLC0415
+    from bq_context.scoring.metrics import score_cell  # noqa: PLC0415
+
+    store = store_for(out)
+    cells = load_merged(store, experiment_id)
+    if not cells:
+        typer.secho(
+            f"No merged results for {experiment_id}. Run `bq-context merge` first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    scores = [s for c in cells if (s := score_cell(c))]
+    figures = sorted(figures_dir.glob("*.png")) if figures_dir and figures_dir.exists() else []
+    document = render_html(
+        scores,
+        experiment_id=experiment_id,
+        figures=figures,
+        convergence_warnings=convergence_from_cells(cells),
+        code_versions={str(c.get("code_version", "")) for c in cells if c.get("code_version")},
+        shard_summaries=load_summaries(store, experiment_id),
+        errors=len(cells) - len(scores),
+    )
+    html_out.parent.mkdir(parents=True, exist_ok=True)
+    html_out.write_text(document)
+    typer.echo(f"Wrote {html_out} ({len(document):,} bytes, {len(figures)} figure(s))")
+
+
+@app.command()
 def plot(
     experiment_id: ExperimentId,
     out: OutOpt = DEFAULT_OUT,
@@ -961,8 +1066,20 @@ def submit_pipeline_cmd(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Compile and print, do not submit.")
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Disable execution caching for the whole job, overriding every per-task setting.",
+        ),
+    ] = False,
 ) -> None:
-    """Compile and submit the pipeline to Vertex AI."""
+    """Compile and submit the pipeline to Vertex AI.
+
+    Without ``--no-cache`` the job defers to the per-task settings in ``dag.py``,
+    which is what lets finished shards be skipped while the enrichment gate still
+    runs every time.
+    """
     import os  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
@@ -1012,6 +1129,8 @@ def submit_pipeline_cmd(
             service_account=service_account,
             experiment_id=experiment_id,
             parameter_values=params,
+            # None defers to per-task settings; False is a blunt global off.
+            enable_caching=False if no_cache else None,
         )
         typer.secho(f"\nsubmitted {job.resource_name}", fg=typer.colors.GREEN)
 

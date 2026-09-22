@@ -42,6 +42,15 @@ class ArtifactStore(Protocol):
         """Create or overwrite an object atomically."""
         ...
 
+    def write_bytes(self, path: str, data: bytes, content_type: str) -> None:
+        """Create or overwrite a binary object atomically.
+
+        Separate from ``write_text`` because that one hard-codes
+        ``application/json``: a PNG uploaded through it would be served with the
+        wrong type and render as a download rather than an image.
+        """
+        ...
+
     def exists(self, path: str) -> bool: ...
 
     def uri(self, path: str) -> str:
@@ -74,6 +83,14 @@ class LocalStore:
         # atomicity GCS gives us for free.
         tmp = full.with_suffix(full.suffix + ".tmp")
         tmp.write_text(text)
+        tmp.replace(full)
+
+    def write_bytes(self, path: str, data: bytes, content_type: str = "") -> None:
+        del content_type  # a local file has no content type to carry
+        full = self._full(path)
+        full.parent.mkdir(parents=True, exist_ok=True)
+        tmp = full.with_suffix(full.suffix + ".tmp")
+        tmp.write_bytes(data)
         tmp.replace(full)
 
     def exists(self, path: str) -> bool:
@@ -122,6 +139,11 @@ class GcsStore:
         self._bucket.blob(self._blob_name(path)).upload_from_string(
             text, content_type="application/json"
         )
+
+    def write_bytes(
+        self, path: str, data: bytes, content_type: str = "application/octet-stream"
+    ) -> None:
+        self._bucket.blob(self._blob_name(path)).upload_from_string(data, content_type=content_type)
 
     def exists(self, path: str) -> bool:
         return self._bucket.blob(self._blob_name(path)).exists()

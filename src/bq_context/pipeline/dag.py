@@ -78,6 +78,7 @@ def bq_context_pipeline(
     approaches: list = DEFAULT_APPROACHES,
     skip_infra: bool = False,
     require_complete: bool = True,
+    refresh_figures: bool = False,
 ) -> None:
     """Run the factorial.
 
@@ -88,6 +89,10 @@ def bq_context_pipeline(
     validate = components.validate_config(project=project, out=out, expect_identity=service_account)
     validate.set_display_name("validate config")
     validate.set_retry(num_retries=0)
+    # Identity, IAM grants and model availability all change outside this
+    # pipeline. A cached "config is fine" is the same false comfort as a cached
+    # preflight, just cheaper to get wrong.
+    validate.set_caching_options(enable_caching=False)
 
     # Always a real task rather than wrapped in dsl.If: a conditional group
     # cannot be depended on from outside it, so preflight could not be ordered
@@ -110,6 +115,9 @@ def bq_context_pipeline(
 
     plan = components.plan_shards(tiers=tiers, approaches=approaches)
     plan.set_display_name("plan shards")
+    # Cacheable, and the only task here that is: a pure function of its inputs
+    # with no external state behind it.
+    plan.set_caching_options(enable_caching=True)
     plan.after(check)
 
     finalize = components.finalize(
@@ -121,6 +129,7 @@ def bq_context_pipeline(
         approaches=approaches,
         require_complete=require_complete,
         question_limit=question_limit,
+        refresh_figures=refresh_figures,
     )
     finalize.set_display_name("merge, score, verify")
     finalize.set_caching_options(enable_caching=False)
@@ -139,6 +148,9 @@ def bq_context_pipeline(
                 runs=runs,
                 out=out,
                 code_version=code_version,
+                # Corpus shape as a cache-key input. code_version alone lets a
+                # changed corpus return cells scored against the old one.
+                corpus_fingerprint=check.outputs["fingerprint"],
                 question_limit=question_limit,
             )
             cell.set_display_name("run shard")
@@ -152,3 +164,8 @@ def bq_context_pipeline(
                 backoff_factor=2.0,
                 backoff_max_duration="600s",
             )
+            # Cacheable, and safe *only* because both code_version and
+            # corpus_fingerprint are explicit inputs. Drop either and a rerun
+            # silently returns cells produced by different code, or scored
+            # against a different corpus.
+            cell.set_caching_options(enable_caching=True)

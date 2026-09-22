@@ -54,15 +54,45 @@ the source on purpose and confirming the test failed.
 Do that before trusting a new guard. It takes one minute:
 
 ```bash
+export PYTHONDONTWRITEBYTECODE=1         # see the trap below — do not skip this
 cp src/path/mod.py /tmp/bak
 # break the thing the test claims to protect
 uv run pytest tests/test_that.py -q      # must FAIL
 cp /tmp/bak src/path/mod.py
+uv run pytest tests/test_that.py -q      # must PASS again
 ```
+
+**The trap: a same-length edit leaves stale bytecode.** Python invalidates a
+`.pyc` on *mtime and size*. Swapping `= None` for `= True` changes neither — both
+are four characters — so restoring the file within the same second reuses the
+mutated cache and the test keeps failing against source that is already correct.
+
+This cost real time once: the source read `None`, `inspect.signature` reported
+`True`, and the file path was identical. `PYTHONDONTWRITEBYTECODE=1` avoids it;
+`find src -name __pycache__ -type d -exec rm -rf {} +` recovers from it.
 
 Note that a mutation which changes no observable behaviour *should* pass —
 `for tier in list(PROFILED_TIERS)` is a copy, not a defect. A test that fails on
 that is over-fitted to the implementation.
+
+## Verify by exit code, not by the last line of output
+
+`uv run ruff check . 2>&1 | tail -1 && uv run ty check src/` does **not** do what
+it looks like. The pipe makes the exit status `tail`'s, which is always 0, so
+`&&` never short-circuits — and a failing `ruff check` prints
+
+```
+No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option).
+```
+
+as its *last* line, which reads like success. A real lint error reached CI this
+way while the local run appeared clean.
+
+Use `make check`, or check status explicitly:
+
+```bash
+uv run ruff check . >/dev/null 2>&1; echo "lint: $?"
+```
 
 ## Prefer introspection to scraping
 

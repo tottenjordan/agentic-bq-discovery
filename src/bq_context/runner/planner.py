@@ -39,6 +39,47 @@ APPROACH_COST_S: dict[str, float] = {
 }
 
 
+def corpus_fingerprint(ladder: list[dict]) -> str:
+    """Short, stable hash of the corpus's enrichment *shape*.
+
+    Threaded into every shard as a KFP input so that changing the corpus
+    invalidates the shard cache exactly as changing the code does. Without it,
+    re-running ``ensure-infra`` to alter enrichment and resubmitting under the
+    same commit returns cells scored against the *old* corpus — green, plausible,
+    wrong.
+
+    **What it deliberately excludes, and why the exclusions matter more than the
+    inclusions:**
+
+    ``bytes`` — ``_tier_profile`` reports ``len(cache.all_detailed())``, the raw
+    ``lookupContext`` capsule. That payload carries Dataplex entry timestamps and
+    per-column ``dataProfile`` float statistics, which shift whenever a DataScan
+    re-runs. ``_tier_profile``'s own docstring calls byte deltas "a trap in both
+    directions". Hashing them would move the fingerprint on essentially every
+    run, so every shard would miss cache — turning a 15-minute resume into a
+    12-hour resweep, and making ``code_version`` irrelevant because everything
+    was already invalidated.
+
+    The search-convergence probe — hit counts drift while the Dataplex index
+    warms, which is the entire reason ``assess_search_convergence`` exists.
+
+    What remains is the shape a human would call "the corpus": how many tables,
+    how many columns profiled, how many glossary terms attached, which
+    table-level aspects are present, per tier.
+    """
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    canonical = [
+        [rung["tier"], rung["tables"], rung["profiled"], rung["terms"], sorted(rung["aspects"])]
+        for rung in sorted(ladder, key=lambda r: r["tier"])
+    ]
+    # sha256, not hash(): the builtin is salted per process, so it would differ
+    # between the preflight task and anything comparing against it.
+    digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode())
+    return digest.hexdigest()[:16]
+
+
 def order_shards(tiers: list[int], approaches: list[str]) -> list[tuple[int, str]]:
     """Return ``(tier, approach)`` pairs in the order they should be dispatched.
 

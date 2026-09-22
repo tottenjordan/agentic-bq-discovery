@@ -29,6 +29,7 @@ image: ## Build, verify, and push the runner image to Artifact Registry
 image-ref: ## Print the image reference for the current commit
 	@echo us-central1-docker.pkg.dev/hybrid-vertex/bq-context/runner:$$(git rev-parse --short HEAD)
 
+
 clean: ## Remove caches and build artifacts
 	rm -rf .ruff_cache .pytest_cache .ty_cache .coverage htmlcov dist build
 	find . -type d -name __pycache__ -not -path './.venv/*' -exec rm -rf {} + 2>/dev/null || true

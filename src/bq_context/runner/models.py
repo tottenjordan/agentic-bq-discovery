@@ -47,6 +47,10 @@ class ShardSpec(BaseModel):
     question_ids: list[str]
     runs: int
     code_version: str
+    #: Enrichment shape this shard ran against. Provenance, and the KFP cache key
+    #: input that stops a corpus change returning cells scored on the old corpus.
+    #: Defaulted so older attempt files and summaries still parse.
+    corpus_fingerprint: str = ""
 
     @property
     def shard_id(self) -> str:
@@ -113,6 +117,7 @@ class ShardResult(BaseModel):
     tier: int
     approach: str
     code_version: str
+    corpus_fingerprint: str = ""
     planned: int
     already_done: int
     executed: int

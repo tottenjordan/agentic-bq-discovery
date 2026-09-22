@@ -134,11 +134,29 @@ def test_code_version_reaches_every_shard(spec: dict[str, Any]) -> None:
 # Image and caching
 # ---------------------------------------------------------------------------
 def test_every_component_pins_the_same_immutable_image(spec: dict[str, Any]) -> None:
+    """One image, still.
+
+    A second image — the runner plus PaperBanana — was built and then deleted.
+    A task's image is fixed at compile time, so it could not be handed over by an
+    earlier step, and a cold install of the extra measures ~3s against minutes to
+    build and push. `finalize` installs it at runtime when figures are requested.
+    """
     images = {c["container"]["image"] for c in spec["deploymentSpec"]["executors"].values()}
     assert len(images) == 1
     image = images.pop()
     assert not image.endswith(":latest"), "a floating tag makes the KFP cache lie"
     assert image == components.RUNNER_IMAGE
+
+
+def test_the_figures_extra_matches_the_declared_optional_dependency() -> None:
+    """finalize installs FIGURES_EXTRA by string; pyproject declares the same
+    extra for local use. Drift means the pipeline installs a version nobody
+    tested against."""
+    import tomllib
+
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    declared = pyproject["project"]["optional-dependencies"]["figures"]
+    assert declared == [components.FIGURES_EXTRA]
 
 
 @pytest.mark.parametrize("task", ["ensure-infra", "preflight", "finalize"])
@@ -201,3 +219,79 @@ def test_smoke_and_pilot_are_cheap() -> None:
     assert PROFILES["smoke"]["question_limit"] == 3
     assert PROFILES["pilot"]["question_limit"] == 5
     assert PROFILES["full"]["question_limit"] == 0, "0 means all 25"
+
+
+# ---------------------------------------------------------------------------
+# Output artifacts
+# ---------------------------------------------------------------------------
+def test_preflight_publishes_its_ladder_and_fingerprint(spec: dict[str, Any]) -> None:
+    """The enrichment ladder gates the whole experiment and used to exist only on
+    stdout. The fingerprint is what stops a corpus change returning cached cells."""
+    out = spec["components"]["comp-preflight"]["outputDefinitions"]
+    assert set(out["artifacts"]) == {"ladder", "tier_metrics"}
+    assert out["parameters"]["fingerprint"]["parameterType"] == "STRING"
+
+
+def test_finalize_publishes_its_results(spec: dict[str, Any]) -> None:
+    """An ExitHandler exit task cannot *read* handler outputs, but it can declare
+    its own — which is the only reason the report is reachable from the UI."""
+    out = spec["components"]["comp-finalize"]["outputDefinitions"]
+    assert {"merged", "report", "run_metrics"} <= set(out["artifacts"])
+
+
+def test_shards_are_keyed_on_the_corpus_as_well_as_the_code(spec: dict[str, Any]) -> None:
+    """Both inputs, or a changed corpus silently returns cells scored on the old one."""
+    shard = next(k for k in spec["components"] if "run-shard" in k)
+    params = spec["components"][shard]["inputDefinitions"]["parameters"]
+    assert "code_version" in params
+    assert "corpus_fingerprint" in params
+
+
+# ---------------------------------------------------------------------------
+# Caching, per task
+# ---------------------------------------------------------------------------
+#: Every task's intended setting, with the reason it holds. Exhaustive on
+#: purpose: adding a task should require a decision, not inherit a default.
+CACHING = {
+    "validate-config": (False, "identity and IAM change outside the pipeline"),
+    "ensure-infra": (False, "corpus state is external"),
+    "preflight": (False, "a cached 'enrichment is fine' is worse than useless"),
+    "plan-shards": (True, "a pure function of its inputs"),
+    "run-shard": (True, "safe only because code_version AND corpus_fingerprint are inputs"),
+    "finalize": (False, "must run on every attempt, including failed ones"),
+}
+
+
+def _all_tasks(spec: dict[str, Any]) -> dict[str, Any]:
+    """Every task, including those nested in the ExitHandler and ParallelFor.
+
+    run-shard lives two DAGs deep (exit-handler-1 -> for-loop-2 -> run-shard), so
+    reading only spec["root"] silently skips the 24 tasks that matter most.
+    """
+    found = dict(spec["root"]["dag"]["tasks"])
+    for component in spec["components"].values():
+        if "dag" in component:
+            found.update(component["dag"]["tasks"])
+    return found
+
+
+@pytest.mark.parametrize(("task", "expected"), [(t, v[0]) for t, v in CACHING.items()])
+def test_each_task_sets_caching_deliberately(
+    spec: dict[str, Any],
+    task: str,
+    expected: bool,  # noqa: FBT001 - a parametrize value, not a caller-facing flag
+) -> None:
+    """Note this only became meaningful once submit stopped passing a job-level
+    bool, which overwrote every one of these settings before reaching Vertex."""
+    actual = _all_tasks(spec)[task].get("cachingOptions", {}).get("enableCache", False)
+    assert actual == expected, CACHING[task][1]
+
+
+def test_every_task_in_the_dag_has_a_caching_decision(spec: dict[str, Any]) -> None:
+    """A new task must not quietly inherit whatever the default happens to be.
+
+    Group tasks are excluded: an ExitHandler and a ParallelFor are containers,
+    not work, and carry no caching of their own.
+    """
+    groups = {"exit-handler-1", "for-loop-2"}
+    assert set(_all_tasks(spec)) - groups == set(CACHING)

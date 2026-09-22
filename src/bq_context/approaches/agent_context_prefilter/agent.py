@@ -9,7 +9,7 @@ selection) with deterministic reranking (for final scoring).
 
 from google.adk import agents
 
-from bq_context.runtime import default_config
+from bq_context.runtime import agent_model
 
 from . import prompts
 from .tools import TOOLS as PREFILTER_TOOLS
@@ -17,7 +17,7 @@ from .tools import rerank_nominations
 
 root_agent = agents.Agent(
     name="agent_context_prefilter",
-    model=default_config().agent_model,
+    model=agent_model(),
     description=(
         "Discovers relevant BigQuery tables by having the LLM review brief "
         "metadata summaries of all in-scope tables, nominate candidates, then "

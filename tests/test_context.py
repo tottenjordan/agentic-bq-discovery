@@ -244,3 +244,48 @@ def test_configure_adk_env_overrides_a_stale_regional_location(
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     config.configure_adk_env()
     assert os.environ["GOOGLE_CLOUD_LOCATION"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# ADK's own Gemini calls
+# ---------------------------------------------------------------------------
+def test_agent_model_carries_retry_options() -> None:
+    """Regression from the first full 3,000-cell run, which lost 7 cells.
+
+    Our jittered backoff wraps call_reranker — the Gemini calls we make. ADK
+    builds and drives its own client for an LLM-driven agent, and a bare model
+    string leaves those calls with no retry at all. Every one of the 7 lost
+    cells was 429 RESOURCE_EXHAUSTED on bq_tools or context_prefilter, the only
+    two approaches that reach the agent LLM.
+    """
+    from bq_context.runtime import agent_model
+
+    retry = agent_model().retry_options  # type: ignore[attr-defined]
+    assert retry is not None, "a bare model string gets no retry"
+    assert retry.attempts == 8
+    assert 429 in retry.http_status_codes
+    assert retry.jitter, "eight shards retrying in lockstep re-collide"
+
+
+def test_agent_retry_matches_our_own_policy() -> None:
+    """Both Gemini paths should behave the same under contention."""
+    from bq_context.runner.backoff import DEFAULT_POLICY
+    from bq_context.runtime import agent_model
+
+    retry = agent_model().retry_options  # type: ignore[attr-defined]
+    assert retry.attempts == DEFAULT_POLICY.max_attempts
+    assert retry.initial_delay == DEFAULT_POLICY.base_delay
+    assert retry.max_delay == DEFAULT_POLICY.max_delay
+    assert retry.exp_base == DEFAULT_POLICY.multiplier
+
+
+def test_every_approach_agent_has_a_retrying_model() -> None:
+    """A new approach added with model=<string> would silently lose retry."""
+    import importlib
+
+    from bq_context.runner.cells import APPROACHES
+
+    for approach, module_path in APPROACHES.items():
+        model = importlib.import_module(module_path).root_agent.model
+        assert not isinstance(model, str), f"{approach} uses a bare model string"
+        assert model.retry_options is not None, approach

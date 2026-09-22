@@ -49,6 +49,28 @@ __all__ = [
 #: "success" come from code that no longer exists.
 RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
 
+#: Which Secret Manager secret holds the Gemini Developer API key. Baked into
+#: `finalize`'s task environment at compile time, because there is no `.env` in
+#: the runner image — `.dockerignore` excludes it under "# Secrets" — so the
+#: variable would otherwise be unset in the container and figure generation would
+#: skip with a WARN on an otherwise green run.
+#:
+#: A compile-time constant, not a pipeline parameter, and not by choice:
+#: `set_env_variable` rejects a PipelineChannel outright, failing the compile with
+#: `TypeError: bad argument type for built-in operation`. Note this is the
+#: *opposite* of `set_container_image`, which does accept a runtime value despite
+#: both being annotated `str`. Do not generalise from one to the other.
+#:
+#: `.get`, not `[...]`: unlike the image, an absent value is normal. Figures are
+#: opt-in, so compiling without this must work. The empty string reaches the
+#: container, `secret_id()` rejects it, and `api_key` logs and skips.
+#:
+#: This is the secret's *name*. The key itself is fetched from Secret Manager at
+#: runtime and must never be set here — `set_env_variable` writes into the
+#: compiled spec and the PipelineJob resource, both readable by anyone with
+#: viewer access.
+SECRET_ID = os.environ.get("SECRET_ID", "")
+
 #: Installed at runtime by `finalize`, and only when figures are requested.
 #:
 #: A second image was tried first — the runner plus PaperBanana — and deleted.

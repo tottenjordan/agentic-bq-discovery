@@ -108,3 +108,45 @@ with the same value resumes. Never derive it from a timestamp inside the
 pipeline.
 
 Related: [[container]], [[prior-art-novastorm-kfp]], [[pipeline-service-account]].
+
+## The hermetic-body constraint includes the annotations
+
+KFP does not ship your module. It extracts each component function's source into
+a standalone `ephemeral_component.py` and re-evaluates the `def` — **annotations
+included** — with only this in scope:
+
+```python
+import kfp
+from kfp import dsl
+from kfp.dsl import *
+from typing import *
+```
+
+`preflight` was annotated `-> Preflight`, a module-level
+`class Preflight(NamedTuple)`. It compiled cleanly, passed every test, and died
+at task startup in Vertex:
+
+```
+NameError: name 'Preflight' is not defined
+```
+
+Compilation introspects the *original* module, where the class exists. Only the
+extracted file matters at runtime. The functional form
+`NamedTuple("Preflight", [("fingerprint", str)])` works because `NamedTuple`
+comes from `typing`. ty rejects a call in a return annotation, so it carries a
+`# ty: ignore[invalid-type-form]` — that is the price of the only form KFP can
+execute.
+
+`tests/test_pipeline.py::test_every_component_body_resolves_in_the_namespace_kfp_gives_it`
+now execs every embedded definition in that namespace, which is the only offline
+check for this.
+
+### Writing that test has its own trap
+
+`compile()` **inherits the `__future__` flags of the calling module** unless you
+pass `dont_inherit=True`. `tests/test_pipeline.py` opens with
+`from __future__ import annotations`, so the first version of the test compiled
+the extracted def with PEP 563 lazy annotations — they became strings, were never
+evaluated, and the test passed no matter what the annotation referenced. The
+identical code raised `NameError` when run as a standalone script, which is what
+eventually gave it away.

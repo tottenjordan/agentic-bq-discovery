@@ -63,21 +63,6 @@ RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]
 FIGURES_EXTRA = "paperbanana>=0.1"
 
 
-class Preflight(NamedTuple):
-    """`preflight`'s output parameters.
-
-    A class rather than the functional ``NamedTuple("Preflight", [...])`` form:
-    the functional form is a *call*, which is not a valid return annotation and
-    which ty rejects outright. KFP reads ``_fields`` either way.
-
-    Only the annotation can use this. The component *body* is extracted and run
-    standalone in the container, where this class does not exist, so the body
-    builds its own equivalent namedtuple.
-    """
-
-    fingerprint: str
-
-
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
 def validate_config(project: str, out: str, expect_identity: str = "") -> None:
     """Fail fast on identity, permissions, models, and storage.
@@ -138,7 +123,7 @@ def preflight(
     baseline: int,
     ladder: dsl.Output[dsl.Markdown],
     tier_metrics: dsl.Output[dsl.Metrics],
-) -> Preflight:
+) -> NamedTuple("Preflight", [("fingerprint", str)]):  # ty: ignore[invalid-type-form]
     """Assert catalog enrichment is real, and publish the corpus fingerprint.
 
     The most important gate in the system. lookupContext returns an empty
@@ -150,9 +135,17 @@ def preflight(
     as a cache-key input. Without it, changing the corpus and resubmitting under
     the same commit returns cells scored against the old corpus.
 
-    A ``NamedTuple`` rather than a bare ``-> str`` so the DAG reads
-    ``check.outputs["fingerprint"]``; KFP names a bare return ``"Output"``, and
-    ``task.output`` raises outright once a task has more than one output.
+    The **functional** ``NamedTuple(...)`` form is load-bearing, not a style
+    choice. KFP extracts this function into a standalone ``ephemeral_component.py``
+    and re-evaluates the ``def`` — annotations included — with only
+    ``from kfp.dsl import *`` and ``from typing import *`` in scope. A
+    module-level ``class Preflight(NamedTuple)`` is in neither, so the annotation
+    raises ``NameError: name 'Preflight' is not defined`` at task startup. The
+    class form was tried, compiled cleanly, and failed in Vertex; ``NamedTuple``
+    itself comes from ``typing`` and survives.
+
+    ty rejects a call in a return annotation, hence the ignore. That is the price
+    of the only form KFP can execute.
     """
     import json
     import os
@@ -214,13 +207,11 @@ def preflight(
         raise SystemExit(returncode)
 
     print(f"corpus fingerprint {payload['fingerprint']}", flush=True)
-    # Deliberately not the module-level Preflight: this body is extracted and run
-    # standalone in the container, where that class does not exist. KFP matches on
-    # _fields, so a structurally identical namedtuple is what it wants — but ty
-    # sees two distinct types, and it is right to.
-    return namedtuple("Preflight", ["fingerprint"])(  # noqa: PYI024  # ty: ignore[invalid-return-type]
-        payload["fingerprint"]
-    )
+    # Built here rather than referencing anything module-level, for the same
+    # reason the annotation uses the functional form: this body is extracted and
+    # run standalone, where nothing from this module exists. KFP matches on
+    # _fields, so a structurally identical namedtuple is what it wants.
+    return namedtuple("Preflight", ["fingerprint"])(payload["fingerprint"])  # noqa: PYI024
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)

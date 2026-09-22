@@ -48,6 +48,140 @@ An agent handed the wrong tables writes confidently wrong SQL. This repo measure
 
 ---
 
+## 🎯 The Challenge
+
+Before an agent can write SQL, it has to find the *right tables* — from tens to
+thousands of candidates, many with lookalike names. A taxi *zone-lookup* table
+sitting next to the trips table. A *Citi Bike* stations table when the question
+is about Austin. Get retrieval wrong and the best SQL model in the world
+confidently answers a different question than the one you asked.
+
+So there are really two questions:
+
+1. **Which discovery strategy retrieves the right tables?**
+2. **How much does richer catalog metadata — profiling, a business glossary,
+   authored NL→SQL guidance — actually help?**
+
+The second is easy to get wrong. If you enrich only some topics, "enrichment
+helps" becomes confounded with "those topics were easier." Measuring it honestly
+requires a designed experiment, not a before-and-after.
+
+---
+
+## 🧪 The Experiment
+
+**Independent variable:** catalog **enrichment tier** —
+`0` schema only → `1` + profiling → `2` + glossary → `3` + guidelines.
+
+**Held constant:** the corpus. `ensure-infra` replicates the **identical**
+15-table corpus into one dataset per tier (`bigquery_context_tier0`..`_tier3`).
+The datasets differ *only* in catalog enrichment, so every topic appears at every
+tier and tier is decoupled from topic. **The replication is the ablation.**
+
+**Design:** a full factorial over four factors — **3,000 isolated approach-runs**.
+
+| Factor | Levels | Notes |
+|---|---|---|
+| **Approach** | 6 | The discovery strategies compared below |
+| **Tier** | 4 | Enrichment level `0`–`3` — the independent variable |
+| **Question** | 25 | The graded set, composition below |
+| **Run** | 5 | Replicates per cell, for medians and spread |
+
+Each cell is an **isolated** approach-run on its own ADK session, so latency and
+token attribution stay clean. The 24 `(tier, approach)` shards run 8-wide on
+Vertex AI Pipelines.
+
+### The corpus
+
+15 tables as views over `bigquery-public-data` — **12 answer tables and 3
+deliberate distractors** spanning transportation, weather, demographics,
+geography, and health. The distractors are chosen to be baited, not merely
+irrelevant: `citibike_stations` (NYC, baits Austin questions), `taxi_zone_geom`
+(zone polygons, baits fare/tip questions), and `unemployment_cps` (national
+monthly, baits local ZIP-level socioeconomic questions).
+
+### The 25 questions
+
+Deliberately weighted toward the hard case — nearly half require joining tables
+that share no obvious name, which is where discovery strategies actually
+separate.
+
+| Category | Count | What it tests | Example |
+|---|---|---|---|
+| `single-table` | 5 | Basic discovery, plus rejecting a same-topic distractor | *"What were the strongest hurricanes to make landfall in the last 20 years?"* |
+| `multi-table-related` | 4 | Tables an analyst would obviously pair | *"Which bike share stations have the highest average trip duration, and where are they located?"* |
+| `multi-table-disparate` | 12 | Seemingly unrelated tables joined via geography (ZIP / county FIPS) — the hard case | *"Which US counties have the most weather stations per capita?"* |
+| `trap` | 4 | Phrased to bait a distractor; the `must_have` is the real table | *"Which Citi Bike-style docking stations in Austin are the busiest?"* |
+
+<details>
+<summary><b>All 25 questions with their required tables</b></summary>
+
+<br />
+
+All **25** graded questions (5 single-table, 4 multi-table-related, 12 multi-table-disparate, 4 trap). `Must-have` tables are the recall target; `distractor` is the baited wrong table.
+
+| # | Category | Question | Must-have tables | Distractor baited |
+|---|---|---|---|---|
+| `single-q1` | single-table | What are the busiest bike share stations in Austin by month? | `austin_bikeshare_trips` | `citibike_stations` |
+| `single-q2` | single-table | How do tip amounts vary by time of day for NYC taxi rides? | `nyc_taxi_trips_2022` | `taxi_zone_geom` |
+| `single-q3` | single-table | What were the strongest hurricanes to make landfall in the last 20 years? | `hurricanes` | — |
+| `single-q4` | single-table | Which baby names have grown fastest in popularity across US states since 1990? | `usa_names_1910_current` | — |
+| `single-q5` | single-table | What is the average birth weight by US county? | `county_natality` | — |
+| `multi-rel-q1` | multi-table-related | Which bike share stations have the highest average trip duration, and where are they located? | `austin_bikeshare_trips`, `austin_bikeshare_stations` | `citibike_stations` |
+| `multi-rel-q2` | multi-table-related | Are there weather stations near the paths of major hurricanes? | `hurricanes`, `weather_stations` | — |
+| `multi-rel-q3` | multi-table-related | Which US counties have the worst annual air quality, and what are their boundaries? | `air_quality_annual_summary`, `us_counties` | — |
+| `multi-rel-q4` | multi-table-related | How do birth rates compare across US counties relative to their population? | `county_natality`, `population_by_zip_2010` | — |
+| `multi-disp-q1` | multi-table-disparate | Is there a correlation between crime rates and bike share usage near specific stations in Austin? | `austin_crime`, `austin_bikeshare_trips`, `austin_bikeshare_stations` | `citibike_stations` |
+| `multi-disp-q10` | multi-table-disparate | Which US counties have the most weather stations relative to their resident population? | `us_counties`, `weather_stations`, `population_by_zip_2010` | — |
+| `multi-disp-q11` | multi-table-disparate | Which US counties have the highest number of births per capita? | `county_natality`, `population_by_zip_2010` | — |
+| `multi-disp-q12` | multi-table-disparate | Which US counties have the most births relative to their resident population? | `county_natality`, `population_by_zip_2010` | — |
+| `multi-disp-q2` | multi-table-disparate | How does population density by ZIP code relate to bike share station placement in Austin? | `population_by_zip_2010`, `austin_bikeshare_stations` | `citibike_stations` |
+| `multi-disp-q3` | multi-table-disparate | Which US counties have the most weather stations per capita? | `us_counties`, `weather_stations`, `population_by_zip_2010` | — |
+| `multi-disp-q4` | multi-table-disparate | Does county air quality relate to average birth weight across the US? | `air_quality_annual_summary`, `county_natality` | — |
+| `multi-disp-q5` | multi-table-disparate | Do Austin ZIP codes with more reported crime also have worse air quality? | `austin_crime`, `air_quality_annual_summary` | — |
+| `multi-disp-q6` | multi-table-disparate | Which Austin ZIP codes have the most reported crimes per capita? | `austin_crime`, `population_by_zip_2010` | `unemployment_cps` |
+| `multi-disp-q7` | multi-table-disparate | Which Austin ZIP codes have the most reported crime relative to their resident population? | `austin_crime`, `population_by_zip_2010` | `unemployment_cps` |
+| `multi-disp-q8` | multi-table-disparate | Which Austin ZIP codes have the most reported crimes per square mile? | `austin_crime`, `zip_codes` | — |
+| `multi-disp-q9` | multi-table-disparate | Which Austin ZIP codes have the most reported crime relative to their land area? | `austin_crime`, `zip_codes` | — |
+| `trap-q1` | trap | Which Austin bike share stations currently have the most open docks? | `austin_bikeshare_stations` | `citibike_stations` |
+| `trap-q2` | trap | What is the total fare and tip revenue collected across NYC taxi zones? | `nyc_taxi_trips_2022` | — |
+| `trap-q3` | trap | How does the unemployment rate differ between high-crime and low-crime Austin ZIP codes? | `austin_crime` | `unemployment_cps` |
+| `trap-q4` | trap | Which Citi Bike-style docking stations in Austin are the busiest? | `austin_bikeshare_trips`, `austin_bikeshare_stations` | `citibike_stations` |
+
+</details>
+
+Source: [`experiments/questions.json`](experiments/questions.json) · rubric:
+[`experiments/GROUND_TRUTH.md`](experiments/GROUND_TRUTH.md)
+
+### How it stays honest
+
+- **Two enrichment-invariant controls.** `bq_tools` reads BigQuery schema and
+  `search_direct` applies no reranker at all, so neither consumes catalog
+  enrichment. They bracket what enrichment adds over a schema-only baseline.
+- **Graded ground truth.** `must_have` (gain 2) / `nice_to_have` (gain 1) /
+  `distractor` (gain 0), so precision and rank quality are meaningful rather
+  than decorative.
+- **Means where medians lie.** On a corpus this easy most cells score 1.0, so
+  the discovery-vs-rerank headline uses means; a median saturates at 100% and
+  hides the tail. Both are reported for the tier response.
+- **A gate before any measurement.** `preflight` prints what enrichment actually
+  reached the capsule at each tier and refuses a run where it did not.
+
+### Known caveats on the enrichment axis
+
+Two things weaken the tier variable in this environment, both measured and
+documented rather than assumed:
+
+| Tier | Intended | Actual |
+|---|---|---|
+| 2 | + business glossary | ✅ 18 annotated columns / 8 tables — but the capsule truncates schemas to **25 columns** by default, so 6 of 24 term links never reach the reranker. `all_schema_fields=true` recovers them at ~1.8× cost |
+| 3 | + authored guidelines | ⚠️ Uses the `overview` aspect: `guidelines` is not available in this project, and it is an availability restriction, not an IAM gap |
+
+Detail: [`docs/notes/gcp/lookup-context-capsule.md`](docs/notes/gcp/lookup-context-capsule.md)
+and [`docs/notes/gcp/corpus-provisioning.md`](docs/notes/gcp/corpus-provisioning.md).
+
+---
+
 ## 🥊 The Six Approaches
 
 All six emit the same `RerankerResponse`, so the comparison is apples-to-apples. Approaches **1** and **6** are controls that bracket the others.
@@ -338,7 +472,7 @@ Dockerfile · cloudbuild.yaml · Makefile · CODE_STANDARDS.md
 
 ---
 
-## 🧪 Testing
+## ✅ Testing
 
 ```bash
 make test        # pytest

@@ -102,13 +102,35 @@ otherwise cry wolf.
 Replaying this run's counts (3, 4, 5, 5) trips it. The current converged state
 (3, 3, 3, 4) does not. See `assess_search_convergence` in `cli.py`.
 
-### A better fix, not yet done
+### The structural fix — done
 
-The guard detects the confound; it does not remove it. **Shuffling the shard
-plan so tier does not correlate with execution order** would make the design
-robust rather than merely monitored. Worth doing before the next scoring sweep —
-a residual warm-up drift too small to trip the guard would still bias tier
-systematically as long as tier 0 always runs first.
+The guard detects the confound; it does not remove it. `runner/planner.py` now
+does, and it is not a shuffle.
+
+The comparison that matters is *tier within approach*, so the plan is ordered
+**approach-major**: all four tiers of an approach enter the queue in the same
+wave and see the same index state. That removes the confound rather than
+randomising it away, which a shuffle would only do in expectation.
+
+Approaches run **longest-first**, which costs the confound nothing and buys back
+makespan — `bq_tools` is ~47 min against ~1 min for `search_direct`, so a sweep
+finishes no sooner than whenever `bq_tools` starts.
+
+Tiers **alternate direction** between approaches. Ascending inside every block
+left tier drifting upward with position across the whole plan, a residual
+correlation of 0.16 — small, but in exactly the direction that produced the
+original artifact. Serpentine order cancels it.
+
+```
+r(position, tier)   tier-major (old)  +0.969
+                    serpentine (new)  +0.000
+
+wave 1 under parallelism=8:  tiers [0,0,1,1,2,2,3,3]
+```
+
+Both the CLI `plan-shards` and the KFP `plan_shards` component call
+`order_shards`; `ParallelFor` dispatches in list order, so the component's
+ordering is the one that actually matters.
 
 ## Provenance and caveats from the resume
 

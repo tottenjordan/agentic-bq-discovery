@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.ty_cache/
+.coverage
+htmlcov/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Build artifacts. Pipeline YAML is compiled at the point of use and never
+# committed — see src/bq_context/pipeline/compilation.py for why.
+dist/
+build/
+*.pipeline.yaml
+pipeline.yaml
+
+# Local experiment scratch. Results live in GCS and BigQuery.
+/scratch/
+/local_results/

@@ -90,17 +90,43 @@ for that approach.
 Two independent measures (hit counts and zero-hit cells) pointing the same way
 is what moves this from "suspicious" to established.
 
-### The guard
+### The guard — rewritten 2026-09-23, because the first version had it backwards
 
-`bq-context preflight` now probes one fixed question against every tier and
-compares raw hit counts. The corpus is identical across tiers, so a converged
-index returns the same count everywhere; a rising count is the warm-up
-signature. It warns when the spread exceeds 15% *and* the absolute gap is at
-least 2 hits — counts are small (3–6), so ±1 is normal noise and would
-otherwise cry wolf.
+`bq-context preflight` probes one fixed question against every tier **twice**,
+separated by `--settle` seconds (45 by default), and warns when any tier's *own*
+count changes between the two passes.
 
-Replaying this run's counts (3, 4, 5, 5) trips it. The current converged state
-(3, 3, 3, 4) does not. See `assess_search_convergence` in `cli.py`.
+The first version compared tiers against **each other**, on the premise that "the
+corpus is identical across tiers, so a converged index returns the same count
+everywhere". That premise is wrong, and it is wrong in the direction that matters:
+only the *tables* are identical. The searchable metadata is exactly what differs
+between tiers, and it is this experiment's independent variable — so unequal hit
+counts are the measurement, not a fault.
+
+Measured on the live corpus, stable across four consecutive samples:
+
+| tier | hits |
+|---|---|
+| 0, 1, 2 | 3 |
+| 3 | 4 |
+
+Tier 3's extra hit is the NYC **taxi** table matching a *bike share* question.
+Its `overview` aspect adds text that makes an irrelevant table match — a
+permanent and correct consequence of enrichment. The old rule read it as a broken
+index, and fired on a live smoke run (`tier0=2, tier1=3, tier2=3, tier3=4,
+spread 67%`) for a corpus that was fine.
+
+Comparing a tier against itself over time also closes a hole the old rule had:
+**uniform drift was invisible to it.** Every tier moving by the same amount left
+the spread unchanged and looked converged.
+
+The remaining true positive is real: in the pipeline `ensure-infra` rewrites
+catalog entries immediately before `preflight` runs, so the index genuinely is in
+churn at that moment. That is what the two-pass check is for.
+
+Still advisory, not fatal — `preflight` exits 0 with a `WARN`. Worth revisiting
+for a full sweep, where proceeding on a moving index is what invalidated this
+run's tier comparison in the first place.
 
 ### The structural fix — done
 

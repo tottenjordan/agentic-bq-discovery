@@ -258,6 +258,11 @@ _MIN_TIERS_TO_COMPARE = 2
 #: converged index. The real failure was a gap of 2+ (2.88 vs 4.96 mean hits).
 _SEARCH_SPREAD_MIN_GAP = 2
 
+#: How long preflight waits between the two probes that decide whether the index
+#: is still moving. Long enough to catch the churn that follows `ensure-infra`
+#: rewriting catalog entries, negligible against a sweep measured in hours.
+_SETTLE_SECONDS = 45
+
 #: A question whose answer table exists identically in every tier.
 _CONVERGENCE_PROBE = "What are the busiest bike share stations in Austin by month?"
 
@@ -282,35 +287,54 @@ def _search_hits_by_tier(config: ExperimentConfig, tiers: list[int]) -> dict[int
     return hits
 
 
-def assess_search_convergence(hits: dict[int, int]) -> list[str]:
-    """Warn when semantic-search hit counts disagree across tiers.
+def assess_search_convergence(
+    first: dict[int, int], second: dict[int, int] | None = None
+) -> list[str]:
+    """Warn when the Dataplex semantic index is still changing.
 
-    This exists because it already happened. In the first full 3,000-cell run
-    the three search-based approaches showed discovery recall climbing
+    This exists because of a real failure. In the first full 3,000-cell run the
+    three search-based approaches showed discovery recall climbing
     0.52 -> 0.68 -> 0.97 -> 0.92 across tiers 0-3, which reads as a large
-    enrichment effect. It was not. Shards run in plan order, tier 0 first, and
-    the Dataplex semantic index was still warming: re-running every tier later
-    gave an identical 0.967 everywhere. Tier was confounded with elapsed time.
+    enrichment effect. It was not: shards run in plan order, tier 0 first, and the
+    index was still warming. Re-running every tier later gave an identical 0.967.
+    Tier was confounded with elapsed time.
 
-    Returns a list of warnings; empty means converged.
+    **It compares each tier against itself, never against other tiers**, and the
+    first version got that wrong. It asserted that "the corpus is identical across
+    tiers, so a converged index returns the same count everywhere" — but only the
+    *tables* are identical. The searchable metadata is exactly what differs, and
+    it is the experiment's independent variable, so unequal counts are the thing
+    being measured rather than evidence of a fault.
+
+    Measured on the live corpus: tiers 0-2 return 3 hits for the probe and tier 3
+    returns 4, stably across repeated samples. The extra hit is the NYC *taxi*
+    table matching a *bike share* question — tier 3's overview aspect adds text
+    that makes an irrelevant table match. A permanent, correct consequence of
+    enrichment, which the old rule reported as a broken index on every run.
+
+    Two observations of the same tiers, separated in time, are the only thing that
+    distinguishes drift from enrichment. With one observation there is nothing to
+    compare and this returns no warnings.
+
+    Returns a list of warnings; empty means nothing moved.
     """
-    counts = list(hits.values())
-    if len(counts) < _MIN_TIERS_TO_COMPARE or not any(counts):
+    if not second:
         return []
-    mean = sum(counts) / len(counts)
-    gap = max(counts) - min(counts)
-    spread = gap / mean if mean else 0.0
-    if spread <= _SEARCH_SPREAD_TOLERANCE or gap < _SEARCH_SPREAD_MIN_GAP:
+    moved = {
+        tier: (first[tier], second[tier])
+        for tier in sorted(set(first) & set(second))
+        if first[tier] != second[tier]
+    }
+    if not moved:
         return []
-    detail = ", ".join(f"tier{t}={n}" for t, n in sorted(hits.items()))
+    detail = ", ".join(f"tier{t}: {a} -> {b}" for t, (a, b) in moved.items())
     return [
         (
-            f"semantic search returns different hit counts per tier ({detail}, "
-            f"spread {spread:.0%}). The corpus is identical across tiers, so the "
-            "Dataplex index has not converged. Because shards run in plan order, "
-            "tier would be confounded with elapsed time and enrichment would "
-            "appear to improve retrieval when it does not. Wait and re-check "
-            "before running a scoring sweep."
+            f"semantic search hit counts changed while preflight was running "
+            f"({detail}). The Dataplex index is still settling, so shards started "
+            "now would see different index states as the sweep progresses, and "
+            "tier would be confounded with elapsed time exactly as it was in "
+            "full-01. Wait for it to settle and re-check before scoring."
         )
     ]
 
@@ -876,6 +900,15 @@ def preflight(
         Path | None,
         typer.Option("--json", help="Also write the ladder and corpus fingerprint here."),
     ] = None,
+    settle: Annotated[
+        int,
+        typer.Option(
+            "--settle",
+            min=0,
+            help="Seconds between the two search probes that check the index is "
+            "not still moving. 0 skips the second probe.",
+        ),
+    ] = _SETTLE_SECONDS,
 ) -> None:
     """Assert catalog enrichment is real before any measurement runs.
 
@@ -939,7 +972,20 @@ def preflight(
         typer.echo(
             "search hits/tier  " + "  ".join(f"tier{t}={n}" for t, n in sorted(probe.items()))
         )
-        warnings.extend(assess_search_convergence(probe))
+        # Twice, separated in time. One observation cannot distinguish a moving
+        # index from enrichment doing its job — see assess_search_convergence.
+        if settle:
+            import time  # noqa: PLC0415
+
+            typer.echo(f"re-probing in {settle}s to check the index is not still moving")
+            time.sleep(settle)
+            again = _search_hits_by_tier(config, sorted(caches))
+            typer.echo(
+                "search hits/tier  "
+                + "  ".join(f"tier{t}={n}" for t, n in sorted(again.items()))
+                + "  (second pass)"
+            )
+            warnings.extend(assess_search_convergence(probe, again))
 
     for warning in warnings:
         typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)

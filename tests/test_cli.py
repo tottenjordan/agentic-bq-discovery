@@ -9,6 +9,7 @@ handling and their refusal paths.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import TYPE_CHECKING
 
@@ -552,38 +553,121 @@ def test_user_credentials_resolve_to_nothing_rather_than_the_vm_sa() -> None:
 
 # ---------------------------------------------------------------------------
 # Search index convergence
+#
+# The guard compares each tier against *itself over time*. It used to compare
+# tiers against each other, on the premise that "the corpus is identical across
+# tiers, so a converged index returns the same count everywhere". Only the
+# *tables* are identical. The searchable metadata is what differs, and it is the
+# experiment's independent variable — so unequal counts are the measurement, not
+# a fault.
+#
+# Measured on the live corpus: tiers 0-2 return 3 hits for the probe and tier 3
+# returns 4, stably across four consecutive samples. The extra hit is the NYC
+# taxi table matching a bike-share question, because tier 3's overview aspect
+# adds text that makes an irrelevant table match. Permanent and correct — and the
+# old rule reported it as a broken index on every run.
 # ---------------------------------------------------------------------------
-def test_converged_index_produces_no_warning() -> None:
-    """Identical corpora across tiers should return identical hit counts."""
-    assert assess_search_convergence({0: 5, 1: 5, 2: 5, 3: 5}) == []
+def test_a_stable_index_produces_no_warning() -> None:
+    stable = {0: 3, 1: 3, 2: 3, 3: 4}
+    assert assess_search_convergence(stable, dict(stable)) == []
 
 
-def test_a_single_hit_difference_does_not_cry_wolf() -> None:
-    """Counts are small (3-6), so +-1 is 20-30% and happens on a healthy index."""
-    assert assess_search_convergence({0: 3, 1: 3, 2: 3, 3: 4}) == []
+def test_tier_differences_alone_are_never_a_warning() -> None:
+    """THE regression. This shape occurs on the live corpus every run, and it is
+    enrichment working rather than a fault."""
+    observed = {0: 3, 1: 3, 2: 3, 3: 4}
+    assert assess_search_convergence(observed, dict(observed)) == []
+    # Even a large spread, if it is not moving, is a measurement not drift.
+    big = {0: 2, 1: 4, 2: 6, 3: 9}
+    assert assess_search_convergence(big, dict(big)) == []
 
 
-def test_a_warming_index_is_caught() -> None:
-    """The real failure, replayed.
+def test_a_moving_index_is_caught() -> None:
+    """The real failure, replayed as what it actually is: a tier whose own count
+    changes between two observations.
 
-    In the first full 3,000-cell run the three search-based approaches showed
-    discovery recall climbing 0.52 -> 0.68 -> 0.97 -> 0.92 across tiers, which
-    reads as a large enrichment effect. It was not: shards run in plan order,
-    tier 0 first, and the Dataplex index was still warming. Re-running every
-    tier hours later gave an identical 0.967. These are the mean hit counts
-    observed during that run, rounded.
+    In full-01 the search approaches showed recall climbing 0.52 -> 0.68 -> 0.97
+    across tiers, reading as an enrichment effect. It was not — shards run in plan
+    order and the index was still warming, so tier was confounded with elapsed
+    time. Re-running hours later gave an identical 0.967 everywhere.
     """
-    warnings = assess_search_convergence({0: 3, 1: 4, 2: 5, 3: 5})
+    warnings = assess_search_convergence({0: 2, 1: 3, 2: 3, 3: 4}, {0: 3, 1: 3, 2: 3, 3: 4})
     assert len(warnings) == 1
-    assert "has not converged" in warnings[0]
+    assert "tier0: 2 -> 3" in warnings[0]
     assert "confounded with elapsed time" in warnings[0]
 
 
-def test_convergence_check_needs_at_least_two_tiers() -> None:
-    assert assess_search_convergence({3: 5}) == []
-    assert assess_search_convergence({}) == []
+def test_drift_that_is_uniform_across_tiers_is_still_caught() -> None:
+    """The old cross-tier rule was blind to this: every tier moving by the same
+    amount left the spread unchanged and looked converged."""
+    assert len(assess_search_convergence({0: 3, 1: 3, 2: 3, 3: 4}, {0: 5, 1: 5, 2: 5, 3: 6})) == 1
 
 
-def test_all_zero_hits_is_not_a_convergence_warning() -> None:
-    """Zero everywhere is a scoping or permissions problem, not index warm-up."""
-    assert assess_search_convergence({0: 0, 1: 0, 2: 0, 3: 0}) == []
+def test_one_observation_cannot_assess_anything() -> None:
+    assert assess_search_convergence({0: 3, 1: 3, 2: 3, 3: 4}) == []
+    assert assess_search_convergence({0: 3}, None) == []
+    assert assess_search_convergence({}, {}) == []
+
+
+def test_only_tiers_present_in_both_are_compared() -> None:
+    """A tier missing from one pass is not evidence of drift."""
+    assert assess_search_convergence({0: 3, 1: 4}, {0: 3}) == []
+
+
+def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Covers the wiring, which the unit tests above do not.
+
+    Deleting the `assess_search_convergence(probe, again)` call from preflight
+    leaves every test in this section green, because they exercise the function
+    directly. Found by mutation.
+    """
+    import time
+
+    from bq_context import cli
+    from bq_context.context_cache import TableCache
+
+    calls: list[int] = []
+
+    def _probe(_config: object, tiers: list[int]) -> dict[int, int]:
+        calls.append(1)
+        # Second pass differs: the index moved while preflight was running.
+        return {t: 3 + (len(calls) - 1) for t in tiers}
+
+    monkeypatch.setattr(cli, "_credentials", lambda _: None)
+    # Without this the test is not hermetic: `_effective_identity(None)` resolves
+    # Application Default Credentials, which pass on a developer box and raise
+    # DefaultCredentialsError in CI — where it failed, having passed locally.
+    monkeypatch.setattr(cli, "_effective_identity", lambda _: "sa@test-project.iam")
+    monkeypatch.setattr(cli, "_search_hits_by_tier", _probe)
+    monkeypatch.setattr(
+        cli,
+        "_tier_profile",
+        lambda t, _c: {
+            "tier": t,
+            "tables": 15,
+            "bytes": 10 * (t + 1),
+            "profiled": 0,
+            "terms": 0,
+            "aspects": [],
+        },
+    )
+    monkeypatch.setattr(cli, "assess_ladder", lambda *_, **__: ([], []))
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    class _Ctx:
+        @staticmethod
+        def build(*_: object, **__: object) -> object:
+            return object()
+
+    monkeypatch.setattr("bq_context.runtime.TierContext", _Ctx)
+    monkeypatch.setattr("bq_context.runtime.tier_scope", contextlib.nullcontext)
+    monkeypatch.setattr("bq_context.runtime.get_datasets", lambda: ["d"])
+    monkeypatch.setattr("bq_context.runtime.get_scoped_tables", lambda _d: ["t"])
+    monkeypatch.setattr(
+        TableCache, "build", classmethod(lambda _cls, *_a, **_k: TableCache.empty())
+    )
+
+    result = runner.invoke(app, ["preflight", "--tier", "1", "--baseline", "0", "--settle", "1"])
+    assert len(calls) == 2, f"expected two probes, got {len(calls)}"
+    assert "second pass" in result.output
+    assert "confounded with elapsed time" in result.output

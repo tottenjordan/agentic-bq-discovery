@@ -216,6 +216,19 @@ It would earn its place if the extra were genuinely heavy (a CUDA base, a large
 model), if the environment blocked PyPI egress (VPC-SC), or if per-run pinned
 environments were a requirement. None holds today.
 
+### But the image must exist when the job is *created*
+
+`set_container_image` with a channel is exempt; a **static** reference is not.
+Vertex rejects job creation outright if a statically referenced image is absent:
+
+```
+Failed to create pipeline job. Error: The image ...runner:8ad9e76 does not exist.
+```
+
+Both halves were verified by submitting real jobs. The consequence is that a
+pipeline cannot build the image its own tasks are pinned to — see
+[[container]] for why the build moved to submit time instead.
+
 ### Do not generalise it: `set_env_variable` is compile-time only
 
 The natural next thought — "if the image can be a runtime value, so can an env

@@ -1,232 +1,182 @@
-"""The in-pipeline image build.
+"""Building the runner image before the job is created.
 
-`ensure_image` is the first task: it guarantees `runner:{sha}` exists before any
-other task tries to pull it. That removes the failure this project kept hitting —
-submitting against a stale image because nobody remembered `make image` — and is
-what makes an unattended, scheduled run possible at all.
+`submit-pipeline` builds `runner:{sha}` when Artifact Registry does not already
+have it, which removes the failure this project kept hitting: submitting against
+a stale image because nobody ran `make image`.
 
-Two things here are worth testing rather than trusting.
+**Why this is not a pipeline task, which is where it was first put.** Vertex
+validates every statically-referenced image when the job is *created*:
 
-**The body is shell.** Every other component shells out to `bq-context`, which is
-Python and covered. This one is a `bash -c` script on a stock Google image,
-because making it a Python component would mean `pip install kfp` into the
-builder before the pipeline can build anything. Shell that only ever runs in
-Cloud Build is shell nobody reads until it fails at 3am, so it is exercised here
-against a fake `gcloud`.
+    Failed to create pipeline job. Error: The image
+    us-central1-docker.pkg.dev/hybrid-vertex/bq-context/runner:8ad9e76 does not exist.
 
-**The source must be `git archive HEAD`, not the working directory.** The image
-is tagged with the HEAD SHA. Uploading the directory would let uncommitted edits
-into an image whose tag says otherwise, and the KFP cache would then treat two
-different images as the same one — the exact "cache lie" the SHA tag exists to
-prevent.
+The run was rejected outright, and the task that would have built the image never
+started. A build step inside the pipeline could only ever confirm an image that
+was already there.
+
+A runtime `set_container_image` channel *is* exempt from that validation —
+verified by submitting a job whose consumer image was a channel resolving to a
+nonexistent tag, which was created successfully. So the five ordinary tasks could
+have taken a built image. But `finalize` is the `ExitHandler` exit task, may not
+depend on anything, and so needs a static reference that already resolves.
+Something must exist before creation regardless; once that is true, doing the
+whole job at submit time is simpler and needs no pipeline-side permissions.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
+import typer
 
-from bq_context.pipeline import components
+from bq_context import cli
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 IMAGE = "us-central1-docker.pkg.dev/p/bq-context/runner:abc1234"
 
-#: A stand-in `gcloud`. Records every invocation, and fails `describe` unless the
-#: image has been "pushed" — which the fake build does by touching a file.
-_FAKE_GCLOUD = """#!/usr/bin/env bash
-echo "$@" >> "$GCLOUD_LOG"
-case "$1 $2" in
-  "artifacts docker")
-    [ -f "$PUSHED" ] && exit 0
-    exit 1
-    ;;
-  "builds submit")
-    [ "$BUILD_FAILS" = "1" ] && exit 1
-    touch "$PUSHED"
-    exit 0
-    ;;
-esac
-exit 0
-"""
+
+class _Result:
+    def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
 
 
 @pytest.fixture
-def run_script(tmp_path: Path) -> Callable[..., subprocess.CompletedProcess[str]]:
-    """Run the real `ensure_image` script with `gcloud` stubbed out."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    gcloud = bin_dir / "gcloud"
-    gcloud.write_text(_FAKE_GCLOUD)
-    gcloud.chmod(0o755)
-    log = tmp_path / "calls.log"
-    pushed = tmp_path / "pushed"
+def gcloud(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[list[str]]]:
+    """Stub every subprocess call and record the argv of each."""
+    calls: list[list[str]] = []
 
-    def _run(
-        *, exists: bool = False, source: str = "gs://b/src.tar.gz", build_fails: bool = False
-    ) -> subprocess.CompletedProcess[str]:
-        if exists:
-            pushed.touch()
-        env = {
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "GCLOUD_LOG": str(log),
-            "PUSHED": str(pushed),
-            "BUILD_FAILS": "1" if build_fails else "0",
-        }
-        proc = subprocess.run(  # noqa: S603
-            ["bash", "-c", components._ENSURE_IMAGE, "ensure-image", IMAGE, source, "cfg", "us-c1"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=60,
-        )
-        proc.calls = log.read_text() if log.exists() else ""  # type: ignore[attr-defined]
-        return proc
+    def _install(
+        *, exists: bool, exists_after_build: bool = True, build_ok: bool = True
+    ) -> list[list[str]]:
+        state = {"pushed": exists}
 
-    return _run
+        def _run(argv: list[str], **_: Any) -> _Result:
+            calls.append(argv)
+            if argv[:2] == ["gcloud", "artifacts"]:
+                return _Result(0 if state["pushed"] else 1)
+            if argv[:2] == ["gcloud", "builds"]:
+                if build_ok:
+                    state["pushed"] = exists_after_build
+                return _Result(0 if build_ok else 1)
+            return _Result(0, "")
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        return calls
+
+    return _install
 
 
-def test_an_existing_image_is_not_rebuilt(run_script) -> None:  # noqa: ANN001
-    """The common path, and the reason this can run on every submit.
-
-    Resubmitting at a commit whose image is already pushed must cost one registry
-    lookup, not a build — otherwise every smoke test pays several minutes.
-    """
-    proc = run_script(exists=True)
-    assert proc.returncode == 0, proc.stderr
-    assert "builds submit" not in proc.calls  # type: ignore[attr-defined]
-    assert "already present" in proc.stdout
+def _builds(calls: list[list[str]]) -> list[list[str]]:
+    return [c for c in calls if c[:2] == ["gcloud", "builds"]]
 
 
-def test_a_missing_image_is_built_from_the_uploaded_source(run_script) -> None:  # noqa: ANN001
-    proc = run_script(exists=False)
-    assert proc.returncode == 0, proc.stderr
-    assert "builds submit gs://b/src.tar.gz" in proc.calls  # type: ignore[attr-defined]
+def test_an_existing_image_is_not_rebuilt(gcloud: Callable[..., list[list[str]]]) -> None:
+    """The common path, and why this can run on every submit: resubmitting at an
+    already-built commit costs one registry lookup, not a build."""
+    calls = gcloud(exists=True)
+    cli.ensure_image(IMAGE, "abc1234")
+    assert not _builds(calls)
 
 
-def test_the_build_is_given_the_tag_not_the_whole_reference(run_script) -> None:  # noqa: ANN001
-    """cloudbuild.yaml composes the full path from $PROJECT_ID itself. Passing a
-    reference would nest one substitution inside another, which Cloud Build does
-    not expand — it fails to parse rather than building the wrong thing."""
-    proc = run_script(exists=False)
-    assert "_TAG=abc1234" in proc.calls  # type: ignore[attr-defined]
-    assert f"_TAG={IMAGE}" not in proc.calls  # type: ignore[attr-defined]
+def test_a_missing_image_is_built(gcloud: Callable[..., list[list[str]]]) -> None:
+    calls = gcloud(exists=False)
+    cli.ensure_image(IMAGE, "abc1234")
+    assert len(_builds(calls)) == 1
+    assert "--substitutions=_TAG=abc1234" in _builds(calls)[0]
 
 
-def test_a_failed_build_fails_the_task(run_script) -> None:  # noqa: ANN001
-    """`set -e`, so this is really a test that the script does not swallow it.
-    A build failure must stop the pipeline here, not surface as an
-    ImagePullBackOff on the next task."""
-    proc = run_script(exists=False, build_fails=True)
-    assert proc.returncode != 0
+def test_the_build_is_given_the_tag_not_the_whole_reference(
+    gcloud: Callable[..., list[list[str]]],
+) -> None:
+    """cloudbuild.yaml composes the full path from $PROJECT_ID itself, and Cloud
+    Build does not expand substitutions recursively — a reference here fails to
+    parse rather than building the wrong thing."""
+    calls = gcloud(exists=False)
+    cli.ensure_image(IMAGE, "abc1234")
+    assert f"--substitutions=_TAG={IMAGE}" not in _builds(calls)[0]
 
 
-def test_a_missing_image_with_no_source_says_what_to_do(run_script) -> None:  # noqa: ANN001
-    """Submitting with --image against an image that does not exist. The message
-    has to name both fixes, because the obvious reading — "the build failed" — is
-    wrong; no build was ever attempted."""
-    proc = run_script(exists=False, source="")
-    assert proc.returncode != 0
-    assert "no build source" in proc.stderr
-    assert "make image" in proc.stderr
+def test_a_failed_build_stops_the_submission(gcloud: Callable[..., list[list[str]]]) -> None:
+    """Submitting anyway would be rejected at creation with a bare "image does not
+    exist", which says nothing about the build that actually failed."""
+    gcloud(exists=False, build_ok=False)
+    with pytest.raises(typer.Exit):
+        cli.ensure_image(IMAGE, "abc1234")
 
 
-def test_the_push_is_verified_before_the_task_succeeds(run_script) -> None:  # noqa: ANN001
-    """Cloud Build can report success before a subsequent describe sees the tag.
-    The next task pulls this exact reference, and a miss there is an opaque
-    ImagePullBackOff, so the script confirms rather than assuming."""
-    proc = run_script(exists=False)
-    # describe before the build, and again after it
-    describes = [ln for ln in proc.calls.splitlines() if ln.startswith("artifacts docker")]  # type: ignore[attr-defined]
-    assert len(describes) == 2, proc.calls  # type: ignore[attr-defined]
+def test_a_build_that_did_not_push_is_caught(gcloud: Callable[..., list[list[str]]]) -> None:
+    """Cloud Build can report success before the push is visible. Vertex would
+    then reject job creation, so the push is confirmed rather than assumed."""
+    gcloud(exists=False, exists_after_build=False)
+    with pytest.raises(typer.Exit):
+        cli.ensure_image(IMAGE, "abc1234")
 
 
-# ---------------------------------------------------------------------------
-# What gets uploaded
-# ---------------------------------------------------------------------------
-def test_the_source_is_the_commit_not_the_working_directory() -> None:
-    """THE correctness property. `git archive HEAD` contains only tracked files
-    at HEAD, so the tarball always describes the commit the tag names — and an
-    untracked `.env` cannot be swept into an image."""
-    import inspect
+def test_an_existing_image_does_not_require_a_clean_tree(
+    gcloud: Callable[..., list[list[str]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is being built, so there is nothing for the tree to misdescribe.
+    Demanding a commit here would block re-running against a known-good image."""
+    gcloud(exists=True)
+    monkeypatch.setattr(
+        cli, "_require_clean_tree", lambda: pytest.fail("should not check the tree")
+    )
+    cli.ensure_image(IMAGE, "abc1234")
 
-    from bq_context import cli
 
-    body = inspect.getsource(cli._build_source)
-    assert "git" in body
-    assert "archive" in body
-    assert "HEAD" in body
+def test_building_does_require_a_clean_tree(
+    gcloud: Callable[..., list[list[str]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rule `make image` has always enforced: a SHA tag must describe its
+    contents, or the KFP cache treats two different images as the same one."""
+    gcloud(exists=False)
+    checked: list[bool] = []
+    monkeypatch.setattr(cli, "_require_clean_tree", lambda: checked.append(True))
+    cli.ensure_image(IMAGE, "abc1234")
+    assert checked, "built without checking the working tree"
 
 
 def test_a_dirty_tree_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same rule `make image` has always enforced: a SHA tag must describe its
-    contents."""
-    import typer
-
-    from bq_context import cli
-
-    class _Dirty:
-        stdout = " M src/bq_context/cli.py\n"
-
-    monkeypatch.setattr(subprocess, "run", lambda *_, **__: _Dirty())
+    monkeypatch.setattr(subprocess, "run", lambda *_, **__: _Result(0, " M src/bq_context/cli.py"))
     with pytest.raises(typer.Exit):
         cli._require_clean_tree()
 
 
-def test_submit_pipeline_actually_calls_the_clean_tree_check(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Covers the *wiring*, which the unit tests above do not.
+def test_a_clean_tree_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *_, **__: _Result(0, "\n"))
+    cli._require_clean_tree()
 
-    Deleting the `_require_clean_tree()` call from `submit-pipeline` leaves every
-    test here green, because they exercise the function directly. Found by
-    mutation rather than by reading the code.
+
+def test_submit_pipeline_builds_before_it_compiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Covers the wiring, not just the function.
+
+    Ordering is the whole point: Vertex rejects the job at creation when the image
+    is absent, so this has to happen before the spec is compiled and submitted.
     """
     from typer.testing import CliRunner
 
-    from bq_context import cli
-
-    called: list[bool] = []
-
-    def _boom() -> None:
-        called.append(True)
-        raise typer.Exit(2)
-
-    import typer
-
-    monkeypatch.setattr(cli, "_require_clean_tree", _boom)
-    result = CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
-    assert called, "submit-pipeline never checked the working tree"
-    assert result.exit_code == 2
+    order: list[str] = []
+    monkeypatch.setattr(cli, "ensure_image", lambda *_: order.append("build"))
+    monkeypatch.setattr(
+        "bq_context.pipeline.compilation.compile_pipeline",
+        lambda dest: (order.append("compile"), dest)[1],
+    )
+    CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
+    assert order[:2] == ["build", "compile"], order
 
 
-def test_the_check_is_skipped_when_an_image_is_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """--image means "use this, do not build", so there is nothing to build from
-    a clean tree and no reason to demand one."""
+def test_a_pinned_image_skips_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--image means "use this one", so there is nothing to build."""
     from typer.testing import CliRunner
 
-    from bq_context import cli
-
     called: list[bool] = []
-    monkeypatch.setattr(cli, "_require_clean_tree", lambda: called.append(True))
+    monkeypatch.setattr(cli, "ensure_image", lambda *_: called.append(True))
     CliRunner().invoke(
         cli.app, ["submit-pipeline", "-e", "t", "--image", "img:pinned", "--dry-run"]
     )
     assert not called
-
-
-def test_a_clean_tree_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Clean:
-        stdout = "\n"
-
-    monkeypatch.setattr(subprocess, "run", lambda *_, **__: _Clean())
-    from bq_context import cli
-
-    cli._require_clean_tree()

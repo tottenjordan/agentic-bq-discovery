@@ -78,55 +78,51 @@ A `:cache` tag is pushed alongside for `--cache-from` on subsequent builds.
 Current: `:1baa86f`, digest
 `sha256:76ac686c3b70af1bc1251f8dafc42c63fdd91f91d13f8b92195247873dd7caf8`.
 
-## The pipeline builds its own image
+## The image is built at submit time, not by the pipeline
 
-Added 2026-09-22. `ensure_image` is the first task: it checks Artifact Registry
-for `runner:{sha}` and, only if absent, submits a Cloud Build from a source
-tarball the CLI uploaded. On the common path — resubmitting at a commit whose
-image is already pushed — it costs one registry lookup.
+Added 2026-09-23, after the obvious design failed live. `submit-pipeline` checks
+Artifact Registry for `runner:{sha}` and builds it if absent, before creating the
+job. On the common path it is one lookup.
 
-**Why not `set_container_image`.** That *does* take a runtime value, so each task
-could be handed an image produced by an earlier step, and it compiles:
+**Vertex validates statically-referenced images when the job is created.** This
+is the fact that decides the architecture, and it is not in the docs we read:
 
 ```
-exec-work  image={{$.inputs.parameters['pipelinechannel--build-image-Output']}}
+Failed to create pipeline job. Error: The image
+us-central1-docker.pkg.dev/hybrid-vertex/bq-context/runner:8ad9e76 does not exist.
 ```
 
-But an `ExitHandler` exit task cannot depend on anything, so `finalize` could
-never receive it — and `finalize` is where merging and scoring happen. It would
-refresh five tasks and leave the sixth stale.
+So the first attempt — an `ensure_image` task as the pipeline's first step, with
+every other task statically pinned — could never work. The job was rejected
+outright and the builder task never ran. **A build step inside the pipeline can
+only confirm an image that is already there.** Verified by submitting one.
 
-Pinning every task to `runner:{sha}` at compile time and making that tag exist
-first covers all six with one `.after()`. The insight is that **a container image
-reference only has to resolve when the task starts, not when the spec is
-compiled**, so compiling against a tag that does not exist yet is fine.
+**A runtime `set_container_image` channel is exempt from that validation.**
+Verified separately: a job whose consumer image was a channel resolving to
+`runner:doesnotexist99` was created successfully, where the static equivalent was
+rejected. So the five ordinary tasks *could* take an image built by an upstream
+step — the original suggestion was sound.
 
-A `@dsl.container_component`, not a Python one: a Python component on a stock
-image would have to `pip install kfp` before the pipeline could build anything.
+It still does not help, because `finalize` is the `ExitHandler` exit task, may not
+depend on anything, and therefore needs a static reference that already resolves.
+Something must exist before creation no matter what. Once that is true, building
+at submit time is strictly simpler: no extra task, no channel plumbing, and no
+pipeline-side permissions.
 
-**The source is `git archive HEAD`, never the working directory.** The tag is the
-HEAD SHA, so uploading the directory would let uncommitted edits into an image
-whose tag says otherwise — the cache lie the SHA tag exists to prevent. It also
-means untracked files, `.env` among them, cannot be swept in. `submit-pipeline`
-refuses a dirty tree for the same reason `make image` always has.
+**Permissions it does *not* need.** The in-pipeline version required the pipeline
+SA to create Cloud Builds and read Artifact Registry — a supply-chain surface
+where a pipeline run could publish an image later runs consume. Doing it at
+submit time means the build runs as whoever submits, so those grants were revoked
+after the experiment: the custom `bqContextBuildSubmitter` role was deleted and
+the Cloud Build identities' read access to the results bucket removed.
 
-### Grants this needed
+One incidental finding: the pipeline SA has no Artifact Registry role at all, and
+does not need one — the Vertex service agent pulls the image, not the task
+identity. The in-pipeline builder failed partly on that, which is how it surfaced.
 
-| identity | grant | why |
-|---|---|---|
-| `bq-context-pipeline@` | `projects/hybrid-vertex/roles/bqContextBuildSubmitter` | custom: `cloudbuild.builds.create/get/list` only |
-| `934903580331@cloudbuild` | `storage.objectViewer` on the results bucket | read the uploaded source tarball |
-| `934903580331-compute@` | same | the modern default build identity |
-
-The custom role is deliberate. `roles/cloudbuild.builds.editor` would also permit
-cancelling and updating any build in the project, and this SA only ever needs to
-submit one and watch it.
-
-**Worth being honest about the cost:** the pipeline can now build and push images
-into the registry it later pulls from. That is a supply-chain surface that did not
-exist when builds were a human running `make image` from a clean tree. The
-clean-tree check and `git archive` keep the tag honest, but the privilege is real
-and was accepted deliberately to make unattended, scheduled runs possible.
+**Clean tree, still.** Building tags the image with the HEAD SHA, so
+`submit-pipeline` refuses a dirty tree exactly as `make image` does. Skipped when
+the image already exists, because then nothing is being described.
 
 ## Where each environment variable actually comes from
 

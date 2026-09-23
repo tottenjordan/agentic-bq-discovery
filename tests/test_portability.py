@@ -229,8 +229,7 @@ def test_submitting_no_longer_demands_an_image(monkeypatch: pytest.MonkeyPatch) 
     without first running `make image-ref`."""
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "acme")
     monkeypatch.delenv("BQ_CONTEXT_IMAGE", raising=False)
-    monkeypatch.setattr(cli, "_require_clean_tree", lambda: None)
-    monkeypatch.setattr(cli, "_build_source", lambda *_: "gs://b/src.tar.gz")
+    monkeypatch.setattr(cli, "ensure_image", lambda *_: None)
     result = runner.invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
     assert result.exit_code == 0, result.output
     # The exact line, not a substring of the output: `build_config` carries the

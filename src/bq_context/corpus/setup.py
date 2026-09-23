@@ -122,7 +122,7 @@ DEFINITION_ENTRY_LINK_TYPE = "projects/dataplex-types/locations/global/entryLink
 # "distractor" marks look-alike tables that are never a correct answer — they
 # exist so precision and trap questions are meaningful (see examples/questions.json).
 # ---------------------------------------------------------------------------
-CORPUS = [
+BASE_CORPUS = [
     # --- Transportation ---
     {
         "name": "austin_bikeshare_trips",
@@ -259,6 +259,180 @@ CORPUS = [
         ),
     },
 ]
+
+# ---------------------------------------------------------------------------
+# The optional `hard` profile: near-neighbour tables that look right for an
+# existing question and are wrong for it.
+#
+# Why this needs no ground-truth edits: `scoring/metrics.gain_for` returns 0.0
+# for any table in neither `must_have` nor `nice_to_have`, and precision already
+# treats "distractors and unlabelled tables" alike. So these make the existing 25
+# questions harder while leaving every label correct.
+#
+# Every source below was verified against BigQuery when this list was written.
+# Two candidates were dropped because they do not exist:
+# `epa_historical_air_quality.air_quality_daily_summary` and
+# `geo_us_boundaries.census_tracts_texas`.
+#
+# Descriptions are written in the same register as BASE_CORPUS -- factual, and
+# giving no hint about which question a table does or does not answer. A vaguer
+# description here would make these tables artificially easy to reject, which
+# biases the measurement toward the answer we want.
+# ---------------------------------------------------------------------------
+NEAR_NEIGHBOUR_CORPUS = [
+    # --- Bike share in other cities: the Austin questions must not match these ---
+    {
+        "name": "sf_bikeshare_trips",
+        "source": "bigquery-public-data.san_francisco_bikeshare.bikeshare_trips",
+        "description": (
+            "Bike share trip records from the San Francisco Bay Area. Each row is a "
+            "single trip with start/end times, stations, duration, and member type."
+        ),
+    },
+    {
+        "name": "sf_bikeshare_stations",
+        "source": "bigquery-public-data.san_francisco_bikeshare.bikeshare_station_info",
+        "description": (
+            "Bike share station information for the San Francisco Bay Area, with "
+            "station name, capacity, and latitude/longitude."
+        ),
+    },
+    {
+        "name": "citibike_trips",
+        "source": "bigquery-public-data.new_york_citibike.citibike_trips",
+        "description": (
+            "Citi Bike trip records from New York City. Each row is a single trip "
+            "with start/stop times, start and end stations, and user type."
+        ),
+    },
+    # --- Taxi in other cities and years ---
+    {
+        "name": "chicago_taxi_trips",
+        "source": "bigquery-public-data.chicago_taxi_trips.taxi_trips",
+        "description": (
+            "Chicago taxi trip records. Includes pickup and dropoff timestamps and "
+            "community areas, trip miles, fares, tips, and payment type."
+        ),
+    },
+    {
+        "name": "nyc_green_taxi_trips_2022",
+        "source": "bigquery-public-data.new_york_taxi_trips.tlc_green_trips_2022",
+        "description": (
+            "NYC green taxi trip records for 2022. Includes pickup/dropoff times and "
+            "locations, fare amounts, tip amounts, and payment types."
+        ),
+    },
+    # --- Crime and incidents in other cities, plus a second Austin incident feed ---
+    {
+        "name": "austin_incidents_2016",
+        "source": "bigquery-public-data.austin_incidents.incidents_2016",
+        "description": (
+            "Austin police incident reports for 2016, with incident type, address, "
+            "council district, and report date."
+        ),
+    },
+    {
+        "name": "chicago_crime",
+        "source": "bigquery-public-data.chicago_crime.crime",
+        "description": (
+            "Reported crimes in Chicago. Each row is an incident with primary type, "
+            "description, location, arrest flag, and date."
+        ),
+    },
+    {
+        "name": "sfpd_incidents",
+        "source": "bigquery-public-data.san_francisco.sfpd_incidents",
+        "description": (
+            "San Francisco police department incident reports, with category, "
+            "description, resolution, district, and location."
+        ),
+    },
+    # --- A second weather-station registry ---
+    {
+        "name": "gsod_stations",
+        "source": "bigquery-public-data.noaa_gsod.stations",
+        "description": (
+            "NOAA Global Surface Summary of the Day station registry, with station "
+            "identifiers, country, state, latitude/longitude, and elevation."
+        ),
+    },
+    # --- A second air-quality summary at a different grain ---
+    {
+        "name": "o3_daily_summary",
+        "source": "bigquery-public-data.epa_historical_air_quality.o3_daily_summary",
+        "description": (
+            "EPA daily ozone measurements by monitoring site, with observation "
+            "counts, arithmetic mean, maximum value, and AQI."
+        ),
+    },
+    # --- Demographics at a different vintage and grain ---
+    {
+        "name": "acs_county_2018",
+        "source": "bigquery-public-data.census_bureau_acs.county_2018_5yr",
+        "description": (
+            "American Community Survey five-year estimates by county for 2018, "
+            "covering population, income, housing, and employment measures."
+        ),
+    },
+    {
+        "name": "county_natality_by_mother_race",
+        "source": "bigquery-public-data.sdoh_cdc_wonder_natality.county_natality_by_mother_race",
+        "description": (
+            "CDC WONDER natality counts by county and mother's race, with births, "
+            "birth weight, and prenatal care measures."
+        ),
+    },
+    # --- A coarser geographic boundary set ---
+    {
+        "name": "us_states",
+        "source": "bigquery-public-data.geo_us_boundaries.states",
+        "description": (
+            "US state boundaries with state name, FIPS code, postal abbreviation, and geometry."
+        ),
+    },
+    # --- A second labour-statistics series ---
+    {
+        "name": "employment_hours_earnings",
+        "source": "bigquery-public-data.bls.employment_hours_earnings",
+        "description": (
+            "Bureau of Labor Statistics employment, hours, and earnings series by "
+            "industry and period."
+        ),
+    },
+    # --- Thematic noise: plausible city-data tables for none of the questions ---
+    {
+        "name": "nypd_mv_collisions",
+        "source": "bigquery-public-data.new_york.nypd_mv_collisions",
+        "description": (
+            "NYPD motor vehicle collision reports, with date, borough, contributing "
+            "factors, vehicle types, and persons injured or killed."
+        ),
+    },
+    {
+        "name": "austin_waste",
+        "source": "bigquery-public-data.austin_waste.waste_and_diversion",
+        "description": (
+            "Austin waste collection and diversion records, with load type, weight, "
+            "route, and dropoff site."
+        ),
+    },
+]
+
+#: Which table set `ensure-infra` provisions. Opt-in and additive: `base` is the
+#: original 15-table corpus and must stay byte-for-byte reproducible, because
+#: full-01 was measured against it.
+CORPUS_PROFILE = os.getenv("CORPUS_PROFILE", "base").strip().lower()
+
+_PROFILES = {"base": [], "hard": NEAR_NEIGHBOUR_CORPUS}
+
+if CORPUS_PROFILE not in _PROFILES:
+    # Deliberately fatal. Falling back to `base` on a typo gives a run that looks
+    # completely normal and measured the wrong corpus -- and nothing downstream
+    # would ever reveal it.
+    _msg = f"Unknown CORPUS_PROFILE {CORPUS_PROFILE!r}. Valid: {', '.join(sorted(_PROFILES))}"
+    raise ValueError(_msg)
+
+CORPUS = BASE_CORPUS + _PROFILES[CORPUS_PROFILE]
 
 # ---------------------------------------------------------------------------
 # GLOSSARY_TERMS (tiers >= 2) — corpus-wide business terms, authored once.

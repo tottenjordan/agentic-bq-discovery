@@ -222,3 +222,97 @@ def test_punctuation_only_differences_collide_on_the_short_path() -> None:
     silently share a resource, and the uniqueness tests above are what catch it.
     """
     assert setup._bounded_id("a_b") == setup._bounded_id("a-b") == setup._bounded_id("a.b")
+
+
+# ---------------------------------------------------------------------------
+# Corpus profiles
+#
+# The 15-table corpus cannot separate the tiers: on a converged index all three
+# search approaches score 0.967 discovery recall at *every* rung. `hard` appends
+# near-neighbour tables that look right and are wrong, making discovery
+# selective again.
+#
+# It is additive and opt-in on purpose. `full-01` has to stay reproducible, so
+# the default profile must keep producing byte-for-byte today's corpus.
+#
+# No ground-truth edits are needed: `metrics.gain_for` returns 0.0 for any table
+# that is in neither `must_have` nor `nice_to_have`, and precision already counts
+# distractors and unlabelled tables alike.
+# ---------------------------------------------------------------------------
+def _reload_setup(monkeypatch: pytest.MonkeyPatch, **env: str):  # noqa: ANN201
+    """Re-import setup.py under a given environment.
+
+    The profile is resolved at import, like RESOURCE_PREFIX, so a fixture that
+    only sets the variable is too late.
+    """
+    import importlib
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return importlib.reload(setup)
+
+
+def test_the_default_profile_is_todays_corpus_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE reproducibility guard. Anything that changes this invalidates full-01."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="base")
+    assert [v["name"] for v in mod.CORPUS] == [v["name"] for v in mod.BASE_CORPUS]
+    assert len(mod.CORPUS) == 15
+
+
+def test_no_profile_set_behaves_as_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CORPUS_PROFILE", raising=False)
+    import importlib
+
+    mod = importlib.reload(setup)
+    assert len(mod.CORPUS) == 15
+
+
+def test_the_hard_profile_appends_near_neighbours(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    assert len(mod.CORPUS) == 31
+    # Additive: the base tables are still there, unchanged and first.
+    assert [v["name"] for v in mod.CORPUS[:15]] == [v["name"] for v in mod.BASE_CORPUS]
+
+
+def test_an_unknown_profile_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never fall back to base. A typo that silently selects the small corpus
+    produces a run that looks fine and measured the wrong thing."""
+    import importlib
+
+    monkeypatch.setenv("CORPUS_PROFILE", "haard")
+    with pytest.raises(ValueError, match="Unknown CORPUS_PROFILE"):
+        importlib.reload(setup)
+
+
+@pytest.mark.parametrize("profile", ["base", "hard"])
+def test_names_and_sources_are_unique(monkeypatch: pytest.MonkeyPatch, profile: str) -> None:
+    """A duplicate name would silently overwrite a view; a duplicate source would
+    put the same table in the corpus twice under two names."""
+    mod = _reload_setup(
+        monkeypatch, CORPUS_PROFILE=profile, RESOURCE_PREFIX=f"bigquery_context_{profile}"
+    )
+    names = [v["name"] for v in mod.CORPUS]
+    sources = [v["source"] for v in mod.CORPUS]
+    assert len(set(names)) == len(names)
+    assert len(set(sources)) == len(sources)
+
+
+def test_every_entry_is_fully_specified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing description would make a hard-corpus table strictly easier to
+    ignore than a base one, which biases the very thing being measured."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    for view in mod.CORPUS:
+        assert set(view) >= {"name", "source", "description"}, view
+        assert view["source"].startswith("bigquery-public-data."), view["source"]
+        assert view["description"].strip()
+
+
+def test_the_tables_that_do_not_exist_are_not_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both were checked against BigQuery during planning and are absent. Listing
+    either fails `ensure-infra` forty minutes in, on view creation."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    sources = {v["source"] for v in mod.CORPUS}
+    assert (
+        "bigquery-public-data.epa_historical_air_quality.air_quality_daily_summary" not in sources
+    )
+    assert "bigquery-public-data.geo_us_boundaries.census_tracts_texas" not in sources

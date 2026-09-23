@@ -265,3 +265,35 @@ def test_the_reference_path_must_be_explicit() -> None:
     assert "_reference_set()" in body
     assert "settings.reference_set_path = references" in body
     assert "PaperBananaPipeline(settings=settings)" in body
+
+
+# ---------------------------------------------------------------------------
+# Diagram layout
+# ---------------------------------------------------------------------------
+def test_the_approaches_band_is_two_rows_not_one() -> None:
+    """Six snake_case identifiers across one row gives each ~1/6 of the width, and
+    `context_prefilter` is 17 characters. Three consecutive pipeline runs produced
+    labels broken mid-word — `semantic_c` above `ontext`.
+
+    Asking for a smaller font does not work: the critic requested exactly that on
+    three iterations and the model did not comply. Two rows of three doubles the
+    box width, which does.
+    """
+    spec = DIAGRAMS["experiment_design"]
+    assert "TWO ROWS OF THREE" in spec
+    assert "not a single row of six" in spec
+
+
+def test_only_identifiers_are_required_to_fit_one_line() -> None:
+    """The first attempt demanded every label be a single line. That is
+    unachievable for `tier 0 schema only` at that box width, so the critic simply
+    moved its complaint to the Corpus and Measurement bands and never approved.
+
+    The real rule is narrower: never split a *word*. Phrases may wrap at a space.
+    Scoping it that way took the verdict from "still wanted changes after 3" to
+    "approved after 1".
+    """
+    spec = DIAGRAMS["experiment_design"]
+    assert "Never split a word across two lines" in spec
+    assert "may wrap at a space" in spec
+    assert "Every label sits on ONE line" not in spec

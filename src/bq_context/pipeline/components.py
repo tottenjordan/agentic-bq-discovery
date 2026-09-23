@@ -35,11 +35,14 @@ from typing import NamedTuple
 from kfp import dsl
 
 __all__ = [
+    "BUILDER_IMAGE",
+    "BUILD_REGION",
     "CONFIG_ENV",
     "CONFIG_ENV_KEYS",
     "FIGURES_EXTRA",
     "RUNNER_IMAGE",
     "SECRET_ID",
+    "ensure_image",
     "ensure_infra",
     "finalize",
     "plan_shards",
@@ -138,6 +141,80 @@ CONFIG_ENV = config_env(os.environ)
 #:
 #: Must stay in step with the `figures` extra in pyproject.toml; a test asserts it.
 FIGURES_EXTRA = "paperbanana>=0.1"
+
+
+#: Where `ensure_image` runs. A stock Google image, deliberately: it is the one
+#: task that cannot use the runner image, because its job is to make the runner
+#: image exist. `:slim` carries bash and gcloud and nothing else.
+BUILDER_IMAGE = "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+
+#: Cloud Build region. Matches Locations.artifact_registry; cloudbuild.yaml pins
+#: the same region in its image paths.
+BUILD_REGION = os.environ.get("BQ_CONTEXT_BUILD_REGION", "us-central1")
+
+#: Skip-if-exists, then build. Written as a shell script on a stock image rather
+#: than a Python component so nothing has to `pip install kfp` before the
+#: pipeline can build its own image.
+#:
+#: The existence check is what makes this cheap enough to run unconditionally:
+#: on the common path — resubmitting at a commit whose image is already pushed —
+#: it is one Artifact Registry lookup, a second or two.
+_ENSURE_IMAGE = r"""
+set -euo pipefail
+image="$1"; source_uri="$2"; config="$3"; region="$4"
+
+if gcloud artifacts docker images describe "$image" >/dev/null 2>&1; then
+  echo "image already present, nothing to build: $image"
+  exit 0
+fi
+
+if [ -z "$source_uri" ]; then
+  echo "FAIL  no image at $image, and no build source was supplied." >&2
+  echo "      Submit from a clean checkout so the source can be uploaded, or" >&2
+  echo "      build it out of band with 'make image'." >&2
+  exit 1
+fi
+
+echo "no image at $image; building from $source_uri"
+printf '%s' "$config" > /tmp/cloudbuild.yaml
+
+# The tag, not the whole reference: cloudbuild.yaml builds the full path itself
+# from $PROJECT_ID, so passing a reference here would nest substitutions, which
+# Cloud Build does not expand recursively.
+tag="${image##*:}"
+gcloud builds submit "$source_uri" \
+  --config=/tmp/cloudbuild.yaml \
+  --region="$region" \
+  --substitutions=_TAG="$tag"
+
+# Cloud Build reports success before the push is necessarily visible to a
+# subsequent describe; confirm rather than assume, because the next task pulls
+# this exact reference and a miss there is a cryptic ImagePullBackOff.
+gcloud artifacts docker images describe "$image" >/dev/null
+echo "built and verified: $image"
+"""
+
+
+@dsl.container_component
+def ensure_image(image: str, source_uri: str, build_config: str, region: str):  # noqa: ANN201
+    """Guarantee the runner image exists before anything tries to pull it.
+
+    A *container* component, not a Python one, so KFP does not have to install
+    itself into the builder image first.
+
+    This is deliberately not `set_container_image`. That does accept a runtime
+    value and would let each task take an image chosen by an upstream step — but
+    an `ExitHandler` exit task cannot depend on anything, so `finalize` could not
+    receive it, and `finalize` is where merging and scoring happen. Pinning every
+    task to `runner:{sha}` at compile time and making that tag exist first covers
+    all six tasks with less machinery: a container image reference only has to
+    resolve when the task starts, not when the spec is compiled.
+    """
+    return dsl.ContainerSpec(
+        image=BUILDER_IMAGE,
+        command=["bash", "-c", _ENSURE_IMAGE, "ensure-image"],
+        args=[image, source_uri, build_config, region],
+    )
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)

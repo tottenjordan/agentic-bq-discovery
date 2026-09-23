@@ -1271,6 +1271,55 @@ def compile_pipeline_cmd(
     typer.echo(str(path))
 
 
+def _build_source(out: str, credentials: Credentials | None, sha: str) -> str:
+    """Upload `git archive HEAD` for Cloud Build, and return its gs:// URI.
+
+    `git archive`, not the working directory: it contains exactly the tracked
+    files at HEAD, so the tarball always describes the commit the image tag names.
+    Uploading the directory instead would let uncommitted edits into an image
+    tagged with a SHA that does not describe them — the "cache lie" the SHA tag
+    exists to prevent. It also means untracked files cannot be swept in, `.env`
+    among them.
+    """
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar.gz", "HEAD"],  # noqa: S607
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    store = store_for(out, credentials)
+    path = f"build-source/{sha}.tar.gz"
+    store.write_bytes(path, archive.stdout, "application/gzip")
+    return store.uri(path)
+
+
+def _require_clean_tree() -> None:
+    """Refuse to submit from a dirty tree when the pipeline will build the image.
+
+    `make image` has always refused this; the in-pipeline build has to refuse it
+    for the same reason. The image is tagged with the HEAD SHA, so building from
+    anything other than HEAD produces a tag that lies about its contents, and the
+    KFP cache then treats two different images as the same one.
+    """
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    ).stdout.strip()
+    if dirty:
+        typer.secho(
+            "Working tree is dirty. The runner image is tagged with the HEAD SHA, "
+            "so building from uncommitted changes would produce a tag that does "
+            "not describe its contents. Commit, stash, or pass --image to use an "
+            "image that already exists.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(2)
+
+
 @app.command("submit-pipeline")
 def submit_pipeline_cmd(
     experiment_id: ExperimentId,
@@ -1339,11 +1388,25 @@ def submit_pipeline_cmd(
         )
         raise typer.Exit(2)
 
+    # Source for the in-pipeline image build. Skipped when --image names an
+    # image that already exists: ensure_image checks Artifact Registry first, so
+    # the common path costs one lookup rather than a build.
+    sha = _code_version()
+    source_uri = ""
+    build_config = ""
+    if not image:
+        _require_clean_tree()
+        build_config = Path("cloudbuild.yaml").read_text()
+        source_uri = _build_source(out, _credentials(""), sha)
+        typer.echo(f"source    {source_uri}")
+
     params = {
         "project": config.project,
         "experiment_id": experiment_id,
         "out": out,
-        "code_version": _code_version(),
+        "source_uri": source_uri,
+        "build_config": build_config,
+        "code_version": sha,
         "service_account": service_account,
         "skip_infra": skip_infra,
         "refresh_figures": refresh_figures,

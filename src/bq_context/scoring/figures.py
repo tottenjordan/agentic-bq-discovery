@@ -143,8 +143,24 @@ def _paperbanana_renderer(key: str) -> Renderer | None:  # pragma: no cover - ne
     # confusing "GOOGLE_API_KEY not found" rather than an auth error.
     os.environ["GOOGLE_API_KEY"] = key
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
+    # Providers are left at their defaults deliberately. This passed
+    # `vlm_provider="google", image_provider="google"`, which PaperBanana rejects:
+    #
+    #   ValueError: Unknown VLM provider: google.
+    #   Available: gemini, openrouter, openai, atlas, openai_local
+    #
+    # The defaults are already `gemini` and `google_imagen`, so naming them at all
+    # was both wrong and unnecessary. Only the models are pinned, because the
+    # shipped defaults are a generation behind (`gemini-2.5-flash`, and a preview
+    # image model).
     pipeline = PaperBananaPipeline(
-        settings=Settings(vlm_provider="google", image_provider="google")
+        settings=Settings(
+            vlm_model="gemini-3.5-flash",
+            # flash rather than pro: these run unattended on a schedule, where a
+            # 429 costs the whole figure step. Pro is the better choice for a
+            # one-shot figure someone is waiting on.
+            image_model="gemini-3.1-flash-image",
+        )
     )
 
     def render(source_context: str, intent: str) -> Path | None:

@@ -148,3 +148,47 @@ def test_the_failure_message_names_the_secret_it_tried(
     with caplog.at_level(logging.WARNING):
         api_key("no-such-project-xyz")
     assert "definitely-not-there" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# PaperBanana settings
+# ---------------------------------------------------------------------------
+def _renderer_code() -> str:
+    """`_paperbanana_renderer`'s source with comments stripped.
+
+    The comments quote the rejected `vlm_provider="google"` so the next reader
+    knows why it is absent — which a naive substring check would then flag.
+    """
+    import inspect
+
+    from bq_context.scoring import figures
+
+    lines = inspect.getsource(figures._paperbanana_renderer).splitlines()
+    return "\n".join(ln for ln in lines if not ln.strip().startswith("#"))
+
+
+def test_no_invalid_provider_is_passed() -> None:
+    """Regression from a live run.
+
+    `Settings(vlm_provider="google", image_provider="google")` is rejected:
+
+        ValueError: Unknown VLM provider: google.
+        Available: gemini, openrouter, openai, atlas, openai_local
+
+    The correct names are `gemini` and `google_imagen` — which are already the
+    defaults, so the right fix was to stop naming them. This is a string
+    comparison rather than an import because `paperbanana` is an optional extra
+    that is not installed in CI.
+    """
+    body = _renderer_code()
+    assert 'vlm_provider="google"' not in body
+    assert 'image_provider="google"' not in body
+
+
+def test_the_models_are_the_current_generation() -> None:
+    """PaperBanana ships `vlm_model='gemini-2.5-flash'` and a preview image model,
+    both a generation behind what this project uses everywhere else."""
+    body = _renderer_code()
+    assert "gemini-3.5-flash" in body
+    assert "gemini-3.1-flash-image" in body
+    assert "gemini-2.5" not in body

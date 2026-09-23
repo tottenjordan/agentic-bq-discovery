@@ -66,6 +66,13 @@ DEFAULT_SA = ""
 _OUT_TEMPLATE = "gs://{project}-bq-context"
 _SA_TEMPLATE = "bq-context-pipeline@{project}.iam.gserviceaccount.com"
 
+#: Matches `make image-ref` and the paths cloudbuild.yaml builds.
+_IMAGE_TEMPLATE = "{region}-docker.pkg.dev/{project}/bq-context/runner:{tag}"
+
+#: Longer parameter values are summarised in the submission echo rather than
+#: printed. Only `build_config` exceeds it today, at several KB of YAML.
+_ECHO_MAX = 120
+
 
 def _derive(template: str, override: str, flag: str) -> str:
     """Fill ``template`` from GOOGLE_CLOUD_PROJECT, unless ``override`` is set.
@@ -97,6 +104,33 @@ def default_out() -> str:
 def default_service_account() -> str:
     """The pipeline's runtime identity, by the same convention."""
     return _derive(_SA_TEMPLATE, "BQ_CONTEXT_SERVICE_ACCOUNT", "--service-account")
+
+
+def default_image(tag: str) -> str:
+    """The runner image reference for a commit.
+
+    Derived rather than demanded. `ensure_image` builds this exact tag if it is
+    missing, so requiring the caller to supply a reference would reintroduce the
+    friction the in-pipeline build exists to remove — you would still have to run
+    `make image-ref`, and the first thing you would hit on a fresh checkout is an
+    error telling you to.
+
+    BQ_CONTEXT_IMAGE still wins, for pinning an image built elsewhere.
+    """
+    import os  # noqa: PLC0415
+
+    explicit = os.environ.get("BQ_CONTEXT_IMAGE", "").strip()
+    if explicit:
+        return explicit
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project:
+        message = (
+            "Cannot work out the runner image: GOOGLE_CLOUD_PROJECT is unset. "
+            "Set it (in .env), or pass --image explicitly."
+        )
+        raise typer.BadParameter(message)
+    region = os.environ.get("BQ_CONTEXT_BUILD_REGION", "us-central1").strip()
+    return _IMAGE_TEMPLATE.format(region=region, project=project, tag=tag)
 
 
 def _resolve_out(value: str) -> str:
@@ -1253,13 +1287,15 @@ def compile_pipeline_cmd(
     """
     import os  # noqa: PLC0415
 
-    if image:
-        os.environ["BQ_CONTEXT_IMAGE"] = image
-    if "BQ_CONTEXT_IMAGE" not in os.environ:
+    # Derived from the commit when not given, because `ensure_image` builds
+    # exactly this tag if it is absent. Demanding a reference here would put the
+    # `make image-ref` step back in front of every submit.
+    os.environ["BQ_CONTEXT_IMAGE"] = image or default_image(_code_version())
+    if not os.environ["BQ_CONTEXT_IMAGE"]:
         typer.secho(
-            "BQ_CONTEXT_IMAGE is not set. base_image is resolved at compile time, "
-            "so a spec cannot be produced without an explicit, immutable image "
-            "reference. Try: --image $(make -s image-ref)",
+            "Could not determine a runner image reference. base_image resolves at "
+            "compile time, so a spec cannot be produced without one. "
+            "Try: --image $(make -s image-ref)",
             fg=typer.colors.RED,
             err=True,
         )
@@ -1371,11 +1407,11 @@ def submit_pipeline_cmd(
     import tempfile  # noqa: PLC0415
 
     config = _config()
-    if image:
-        os.environ["BQ_CONTEXT_IMAGE"] = image
-    if "BQ_CONTEXT_IMAGE" not in os.environ:
-        typer.secho("BQ_CONTEXT_IMAGE is not set (try --image).", fg=typer.colors.RED, err=True)
-        raise typer.Exit(2)
+    # Derived from the commit when not given: `ensure_image` builds exactly this
+    # tag if it is absent, so demanding a reference here would put `make
+    # image-ref` back in front of every submit.
+    sha = _code_version()
+    os.environ["BQ_CONTEXT_IMAGE"] = image or default_image(sha)
 
     from bq_context.pipeline.compilation import compile_pipeline  # noqa: PLC0415
     from bq_context.pipeline.submit import PROFILES, submit_pipeline  # noqa: PLC0415
@@ -1391,7 +1427,6 @@ def submit_pipeline_cmd(
     # Source for the in-pipeline image build. Skipped when --image names an
     # image that already exists: ensure_image checks Artifact Registry first, so
     # the common path costs one lookup rather than a build.
-    sha = _code_version()
     source_uri = ""
     build_config = ""
     if not image:
@@ -1415,7 +1450,12 @@ def submit_pipeline_cmd(
     typer.echo(f"profile   {profile}")
     typer.echo(f"image     {os.environ['BQ_CONTEXT_IMAGE']}")
     for key, value in sorted(params.items()):
-        typer.echo(f"  {key:<18}{value}")
+        # build_config is the whole of cloudbuild.yaml; printing it buries every
+        # other parameter in a screen of YAML.
+        shown = (
+            f"<{len(value)} bytes>" if isinstance(value, str) and len(value) > _ECHO_MAX else value
+        )
+        typer.echo(f"  {key:<18}{shown}")
 
     with tempfile.TemporaryDirectory() as tmp:
         spec = compile_pipeline(Path(tmp) / "pipeline.yaml")

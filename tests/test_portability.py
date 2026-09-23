@@ -193,3 +193,50 @@ def test_the_pipeline_requires_a_project_and_a_bucket() -> None:
         declared = re.search(rf"\n\s+{required}: str(\s*=)?", signature)
         assert declared, f"{required} missing from the pipeline signature"
         assert not declared.group(1), f"{required} must not have a default"
+
+
+# ---------------------------------------------------------------------------
+# The runner image reference
+# ---------------------------------------------------------------------------
+def test_the_image_reference_is_derived_from_the_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ensure_image` builds exactly this tag when it is absent, so demanding the
+    caller supply one would put `make image-ref` back in front of every submit —
+    the friction the in-pipeline build exists to remove."""
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "acme-analytics")
+    monkeypatch.delenv("BQ_CONTEXT_IMAGE", raising=False)
+    monkeypatch.delenv("BQ_CONTEXT_BUILD_REGION", raising=False)
+    assert cli.default_image("abc1234") == (
+        "us-central1-docker.pkg.dev/acme-analytics/bq-context/runner:abc1234"
+    )
+
+
+def test_it_matches_what_make_image_ref_prints() -> None:
+    """Two places compose this path; a divergence means the pipeline builds one
+    tag and a human pushes another."""
+    makefile = Path("Makefile").read_text()
+    assert "$(REGION)-docker.pkg.dev/$(GOOGLE_CLOUD_PROJECT)/bq-context/runner" in makefile
+    assert cli._IMAGE_TEMPLATE.startswith("{region}-docker.pkg.dev/{project}/bq-context/runner:")
+
+
+def test_an_explicit_image_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "acme")
+    monkeypatch.setenv("BQ_CONTEXT_IMAGE", "elsewhere/runner:pinned")
+    assert cli.default_image("abc1234") == "elsewhere/runner:pinned"
+
+
+def test_submitting_no_longer_demands_an_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regression this closes: a fresh checkout could not submit at all
+    without first running `make image-ref`."""
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "acme")
+    monkeypatch.delenv("BQ_CONTEXT_IMAGE", raising=False)
+    monkeypatch.setattr(cli, "_require_clean_tree", lambda: None)
+    monkeypatch.setattr(cli, "_build_source", lambda *_: "gs://b/src.tar.gz")
+    result = runner.invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    # The exact line, not a substring of the output: `build_config` carries the
+    # whole of cloudbuild.yaml, which mentions this path too, so a loose `in`
+    # check passes even when nothing was derived. Found by mutation.
+    expected = cli.default_image(cli._code_version())
+    assert any(
+        ln.startswith("image") and ln.split()[-1] == expected for ln in result.output.splitlines()
+    ), result.output

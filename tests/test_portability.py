@@ -239,3 +239,16 @@ def test_submitting_no_longer_demands_an_image(monkeypatch: pytest.MonkeyPatch) 
     assert any(
         ln.startswith("image") and ln.split()[-1] == expected for ln in result.output.splitlines()
     ), result.output
+
+
+def test_generated_output_directories_stay_out_of_the_build_context() -> None:
+    """`gcloud builds submit .` filters on .dockerignore, not .gitignore.
+
+    A single `bq-context figures` leaves 47 MB under `outputs/` — PaperBanana's
+    full run history, every iteration of every diagram. It is gitignored, so it
+    never shows as a dirty tree and the clean-tree check waves it through, but it
+    would ride along in every build context.
+    """
+    ignored = Path(".dockerignore").read_text().splitlines()
+    for path in ("outputs/", "plots/", ".venv/", ".env"):
+        assert path in ignored, f"{path} missing from .dockerignore"

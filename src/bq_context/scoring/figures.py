@@ -82,11 +82,18 @@ DIAGRAMS: dict[str, str] = {
         "Factorial experiment design as three titled horizontal bands stacked top to "
         "bottom. Band 1 'Corpus': four enrichment tiers, each a rounded rectangle, "
         "labelled tier 0 schema only, tier 1 plus profiling, tier 2 plus glossary, "
-        "tier 3 plus table aspect. Band 2 'Approaches': six rounded rectangles in a "
-        "row labelled bq_tools, kc_search, kc_context, context_prefilter, "
-        "semantic_context, search_direct. Band 3 'Measurement': one box '25 questions "
-        "x 5 runs' flowing left to right into 'graded relevance scoring' into "
-        "'recall, nDCG@5, precision'. There are NO arrows between bands."
+        "tier 3 plus table aspect. Band 2 'Approaches': six rounded rectangles "
+        "arranged as TWO ROWS OF THREE, not a single row of six — top row bq_tools, "
+        "kc_search, kc_context; bottom row context_prefilter, semantic_context, "
+        "search_direct. Band 3 'Measurement': one box '25 questions x 5 runs' flowing "
+        "left to right into 'graded relevance scoring' into 'recall, nDCG@5, "
+        "precision'. There are NO arrows between bands. "
+        "Never split a word across two lines and never hyphenate: 'semantic_context' "
+        "must never render as 'semantic_c' above 'ontext'. The six snake_case "
+        "identifiers in Band 2 each sit on one line, in boxes wide enough for the "
+        "longest of them, 'context_prefilter', with space to spare. Ordinary "
+        "multi-word phrases elsewhere may wrap at a space onto two lines; that is "
+        "fine and needs no extra width."
     ),
 }
 

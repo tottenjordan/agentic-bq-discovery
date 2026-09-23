@@ -49,7 +49,8 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 BQ_LOCATION = os.getenv("BQ_LOCATION", "US")
 DATAPLEX_LOCATION = os.getenv("DATAPLEX_LOCATION", "us-central1")
-RESOURCE_PREFIX = os.getenv("RESOURCE_PREFIX", "bigquery_context")
+_DEFAULT_RESOURCE_PREFIX = "bigquery_context"
+RESOURCE_PREFIX = os.getenv("RESOURCE_PREFIX", _DEFAULT_RESOURCE_PREFIX)
 
 # Region for glossary/term/entry-link resources. Entry links require every
 # referenced entry to live in the link's region (or in ``global``). The BQ table
@@ -430,6 +431,25 @@ if CORPUS_PROFILE not in _PROFILES:
     # completely normal and measured the wrong corpus -- and nothing downstream
     # would ever reveal it.
     _msg = f"Unknown CORPUS_PROFILE {CORPUS_PROFILE!r}. Valid: {', '.join(sorted(_PROFILES))}"
+    raise ValueError(_msg)
+
+#: Omit table and column descriptions at tier 0, making it a genuine schema-only
+#: baseline. Off by default: tier 0 has always carried them, and full-01 was
+#: measured that way.
+BARE_TIER0 = os.getenv("BARE_TIER0", "").strip().lower() in {"1", "true", "yes", "on"}
+
+# Refuse to modify the baseline datasets. Either option, run against the default
+# prefix, writes into `bigquery_context_tier0..3` -- adding views, or stripping
+# the descriptions every earlier run measured against. Neither is visible
+# afterwards: the datasets still look healthy and preflight still passes, so the
+# next comparison against full-01 is quietly meaningless.
+if (CORPUS_PROFILE != "base" or BARE_TIER0) and RESOURCE_PREFIX == _DEFAULT_RESOURCE_PREFIX:
+    _how = "CORPUS_PROFILE=" + CORPUS_PROFILE if CORPUS_PROFILE != "base" else "BARE_TIER0"
+    _msg = (
+        f"{_how} with the default RESOURCE_PREFIX would add tables to the baseline "
+        f"corpus, or change it, and make full-01 irreproducible. Set RESOURCE_PREFIX "
+        f"to something else, e.g. {_DEFAULT_RESOURCE_PREFIX}_hard."
+    )
     raise ValueError(_msg)
 
 CORPUS = BASE_CORPUS + _PROFILES[CORPUS_PROFILE]

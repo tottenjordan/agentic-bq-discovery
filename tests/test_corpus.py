@@ -18,10 +18,14 @@ These tests cover both in milliseconds.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
 from google.cloud import dataplex_v1
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 from bq_context.corpus import cleanup, setup
 
@@ -239,7 +243,7 @@ def test_punctuation_only_differences_collide_on_the_short_path() -> None:
 # that is in neither `must_have` nor `nice_to_have`, and precision already counts
 # distractors and unlabelled tables alike.
 # ---------------------------------------------------------------------------
-def _reload_setup(monkeypatch: pytest.MonkeyPatch, **env: str):  # noqa: ANN201
+def _reload_setup(monkeypatch: pytest.MonkeyPatch, **env: str) -> ModuleType:
     """Re-import setup.py under a given environment.
 
     The profile is resolved at import, like RESOURCE_PREFIX, so a fixture that
@@ -316,3 +320,59 @@ def test_the_tables_that_do_not_exist_are_not_listed(monkeypatch: pytest.MonkeyP
         "bigquery-public-data.epa_historical_air_quality.air_quality_daily_summary" not in sources
     )
     assert "bigquery-public-data.geo_us_boundaries.census_tracts_texas" not in sources
+
+
+# ---------------------------------------------------------------------------
+# Guarding the baseline datasets
+# ---------------------------------------------------------------------------
+def test_a_profile_cannot_be_mixed_into_the_baseline_datasets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE guard, and the one whose absence is expensive.
+
+    `CORPUS_PROFILE=hard` with the default RESOURCE_PREFIX would add 16 views to
+    `bigquery_context_tier0..3`, destroying the reproducibility this whole option
+    exists to protect. The damage is not obvious afterwards: the datasets still
+    look healthy, preflight still passes, and only the table count betrays it.
+    """
+    import importlib
+
+    monkeypatch.setenv("CORPUS_PROFILE", "hard")
+    monkeypatch.delenv("RESOURCE_PREFIX", raising=False)
+    with pytest.raises(ValueError, match="would add tables to the baseline corpus"):
+        importlib.reload(setup)
+
+
+def test_the_same_guard_covers_a_bare_tier_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stripping descriptions from the shared tier 0 is just as destructive as
+    adding tables to it, and just as quiet."""
+    import importlib
+
+    monkeypatch.setenv("BARE_TIER0", "1")
+    monkeypatch.delenv("RESOURCE_PREFIX", raising=False)
+    with pytest.raises(ValueError, match=r"would add tables to the baseline corpus|BARE_TIER0"):
+        importlib.reload(setup)
+
+
+def test_a_distinct_prefix_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    assert mod.tier_dataset(0) == "bigquery_context_hard_tier0"
+
+
+def test_setup_and_cleanup_agree_on_what_to_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cleanup.py imports CORPUS and the tier thresholds from setup.py, so it
+    removes whatever the *current* environment selects. Run under a different
+    profile or prefix than the one that provisioned, and it orphans scans and
+    entry links instead of deleting them -- and stale catalog resources survive a
+    rebuild, which is how a later run inherits enrichment it was never meant to
+    see.
+    """
+    import importlib
+
+    from bq_context.corpus import cleanup
+
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    importlib.reload(cleanup)
+    assert [v["name"] for v in cleanup.CORPUS] == [v["name"] for v in mod.CORPUS]
+    assert cleanup.PROFILED_TIERS == mod.PROFILED_TIERS
+    assert cleanup.GLOSSARY_TIERS == mod.GLOSSARY_TIERS

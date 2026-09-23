@@ -46,18 +46,39 @@ NOT_FORWARDED = {
 }
 
 
-def test_the_forwarded_set_covers_everything_from_env_reads() -> None:
-    """THE guard. Add a variable to `ExperimentConfig.from_env` and forget to
-    forward it, and the pipeline silently runs on its default — which is exactly
-    how all six came to be missing."""
+def _variables_that_shape_a_run() -> set[str]:
+    """Every environment variable a task's behaviour depends on.
+
+    Two sources, not one. `ExperimentConfig.from_env` is the obvious one, and
+    `corpus/setup.py` is the one that was missed: it reads RESOURCE_PREFIX,
+    CORPUS_PROFILE and BARE_TIER0 at module scope, and a guard that only parsed
+    config.py would have waved the last two straight through — the identical bug
+    this test exists to prevent, one file over.
+    """
     import re
     from pathlib import Path
 
-    source = Path(components.__file__).parent.parent / "config.py"
-    body = source.read_text().split("def from_env")[1].split("\n    @")[0]
-    read = set(re.findall(r'os\.environ(?:\.get)?\(\s*"([A-Z_0-9]+)"', body))
+    root = Path(components.__file__).parent.parent
+    config_body = (root / "config.py").read_text().split("def from_env")[1].split("\n    @")[0]
+    # Module scope only: an os.getenv inside a function is a runtime lookup in
+    # whatever process calls it, not something the task environment must carry.
+    setup_body = "\n".join(
+        line
+        for line in (root / "corpus" / "setup.py").read_text().splitlines()
+        if line and not line[0].isspace()
+    )
+    pattern = r'os\.(?:environ(?:\.get)?|getenv)\(\s*"([A-Z_0-9]+)"'
+    return set(re.findall(pattern, config_body)) | set(re.findall(pattern, setup_body))
 
-    assert read, "parsed no variables out of from_env; the guard would be vacuous"
+
+def test_the_forwarded_set_covers_everything_from_env_reads() -> None:
+    """THE guard. Add a variable that changes what a run measures and forget to
+    forward it, and the pipeline silently uses its default — which is exactly how
+    all six came to be missing."""
+    read = _variables_that_shape_a_run()
+
+    assert read, "parsed no variables; the guard would be vacuous"
+    assert "CORPUS_PROFILE" in read, "the setup.py half of the parse stopped working"
     missed = read - set(components.CONFIG_ENV_KEYS) - NOT_FORWARDED
     assert not missed, (
         f"{sorted(missed)} shape what the experiment measures but never reach the "

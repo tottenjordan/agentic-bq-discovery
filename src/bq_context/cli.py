@@ -927,11 +927,10 @@ def preflight(
     # What this run measured, in the saved log. The ladder below already shows the
     # table count, but a corpus profile and a TOP_K that were only ever set in a
     # shell are invisible afterwards -- and both change the numbers.
-    from bq_context.corpus.setup import BARE_TIER0, CORPUS_PROFILE  # noqa: PLC0415
+    from bq_context.corpus.setup import CORPUS_PROFILE  # noqa: PLC0415
 
     typer.echo(
-        f"corpus:   profile={CORPUS_PROFILE} prefix={config.resource_prefix} "
-        f"top_k={config.top_k} bare_tier0={BARE_TIER0}"
+        f"corpus:   profile={CORPUS_PROFILE} prefix={config.resource_prefix} top_k={config.top_k}"
     )
 
     from google.api_core.exceptions import NotFound  # noqa: PLC0415

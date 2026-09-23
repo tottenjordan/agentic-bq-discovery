@@ -33,7 +33,9 @@ def test_the_corpus_table_is_always_the_original_fifteen(
     monkeypatch.setenv("CORPUS_PROFILE", "hard")
     monkeypatch.setenv("RESOURCE_PREFIX", "bigquery_context_hard")
     importlib.reload(setup)
-    assert len(setup.CORPUS) == 31, "the hard profile did not load; the test proves nothing"
+    assert len(setup.CORPUS) > len(setup.BASE_CORPUS), (
+        "the hard profile did not load; the comparison below would prove nothing"
+    )
 
     hardened = importlib.reload(upstream_build_results).corpus_table()
     assert hardened == baseline

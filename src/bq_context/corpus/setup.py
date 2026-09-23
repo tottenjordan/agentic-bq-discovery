@@ -76,46 +76,6 @@ GLOSSARY_TIERS = [t for t in TIERS if t >= 2]  # glossary terms + definition lin
 GUIDELINES_TIERS = [t for t in TIERS if t >= 3]  # table-level guidelines aspect
 
 
-def _without_descriptions(schema):
-    """Copy a schema with every description removed, at every depth.
-
-    Recursive because public tables have RECORD fields, and a shallow strip
-    leaves the nested column descriptions in place -- which on a wide table is
-    most of what tier 0 was leaking.
-    """
-    from google.cloud import bigquery
-
-    return [
-        bigquery.SchemaField(
-            field.name,
-            field.field_type,
-            mode=field.mode,
-            description=None,
-            fields=_without_descriptions(field.fields) if field.fields else (),
-        )
-        for field in schema
-    ]
-
-
-def _description_for(tier, description):
-    """The table description to write at ``tier``.
-
-    None at tier 0 when BARE_TIER0 is on, and unchanged everywhere else. Tiers
-    1-3 must keep what they have always had, or a tier-0-to-tier-1 comparison
-    measures two changes at once.
-    """
-    if BARE_TIER0 and tier == 0:
-        return None
-    return description
-
-
-def _schema_for(tier, schema):
-    """The column schema to write at ``tier``, stripped only at a bare tier 0."""
-    if BARE_TIER0 and tier == 0:
-        return _without_descriptions(schema)
-    return schema
-
-
 def tier_dataset(tier: int) -> str:
     """Dataset id holding the corpus at a given enrichment tier."""
     return f"{RESOURCE_PREFIX}_tier{tier}"
@@ -322,30 +282,6 @@ BASE_CORPUS = [
 # ---------------------------------------------------------------------------
 NEAR_NEIGHBOUR_CORPUS = [
     # --- Bike share in other cities: the Austin questions must not match these ---
-    {
-        "name": "sf_bikeshare_trips",
-        "source": "bigquery-public-data.san_francisco_bikeshare.bikeshare_trips",
-        "description": (
-            "Bike share trip records from the San Francisco Bay Area. Each row is a "
-            "single trip with start/end times, stations, duration, and member type."
-        ),
-    },
-    {
-        "name": "sf_bikeshare_stations",
-        "source": "bigquery-public-data.san_francisco_bikeshare.bikeshare_station_info",
-        "description": (
-            "Bike share station information for the San Francisco Bay Area, with "
-            "station name, capacity, and latitude/longitude."
-        ),
-    },
-    {
-        "name": "citibike_trips",
-        "source": "bigquery-public-data.new_york_citibike.citibike_trips",
-        "description": (
-            "Citi Bike trip records from New York City. Each row is a single trip "
-            "with start/stop times, start and end stations, and user type."
-        ),
-    },
     # --- Taxi in other cities and years ---
     {
         "name": "chicago_taxi_trips",
@@ -389,40 +325,8 @@ NEAR_NEIGHBOUR_CORPUS = [
         ),
     },
     # --- A second weather-station registry ---
-    {
-        "name": "gsod_stations",
-        "source": "bigquery-public-data.noaa_gsod.stations",
-        "description": (
-            "NOAA Global Surface Summary of the Day station registry, with station "
-            "identifiers, country, state, latitude/longitude, and elevation."
-        ),
-    },
     # --- A second air-quality summary at a different grain ---
-    {
-        "name": "o3_daily_summary",
-        "source": "bigquery-public-data.epa_historical_air_quality.o3_daily_summary",
-        "description": (
-            "EPA daily ozone measurements by monitoring site, with observation "
-            "counts, arithmetic mean, maximum value, and AQI."
-        ),
-    },
     # --- Demographics at a different vintage and grain ---
-    {
-        "name": "acs_county_2018",
-        "source": "bigquery-public-data.census_bureau_acs.county_2018_5yr",
-        "description": (
-            "American Community Survey five-year estimates by county for 2018, "
-            "covering population, income, housing, and employment measures."
-        ),
-    },
-    {
-        "name": "county_natality_by_mother_race",
-        "source": "bigquery-public-data.sdoh_cdc_wonder_natality.county_natality_by_mother_race",
-        "description": (
-            "CDC WONDER natality counts by county and mother's race, with births, "
-            "birth weight, and prenatal care measures."
-        ),
-    },
     # --- A coarser geographic boundary set ---
     {
         "name": "us_states",
@@ -473,22 +377,15 @@ if CORPUS_PROFILE not in _PROFILES:
     _msg = f"Unknown CORPUS_PROFILE {CORPUS_PROFILE!r}. Valid: {', '.join(sorted(_PROFILES))}"
     raise ValueError(_msg)
 
-#: Omit table and column descriptions at tier 0, making it a genuine schema-only
-#: baseline. Off by default: tier 0 has always carried them, and full-01 was
-#: measured that way.
-BARE_TIER0 = os.getenv("BARE_TIER0", "").strip().lower() in {"1", "true", "yes", "on"}
-
-# Refuse to modify the baseline datasets. Either option, run against the default
-# prefix, writes into `bigquery_context_tier0..3` -- adding views, or stripping
-# the descriptions every earlier run measured against. Neither is visible
+# Refuse to modify the baseline datasets. A profile run against the default
+# prefix adds views to `bigquery_context_tier0..3`, and the damage is invisible
 # afterwards: the datasets still look healthy and preflight still passes, so the
 # next comparison against full-01 is quietly meaningless.
-if (CORPUS_PROFILE != "base" or BARE_TIER0) and RESOURCE_PREFIX == _DEFAULT_RESOURCE_PREFIX:
-    _how = "CORPUS_PROFILE=" + CORPUS_PROFILE if CORPUS_PROFILE != "base" else "BARE_TIER0"
+if CORPUS_PROFILE != "base" and RESOURCE_PREFIX == _DEFAULT_RESOURCE_PREFIX:
     _msg = (
-        f"{_how} with the default RESOURCE_PREFIX would add tables to the baseline "
-        f"corpus, or change it, and make full-01 irreproducible. Set RESOURCE_PREFIX "
-        f"to something else, e.g. {_DEFAULT_RESOURCE_PREFIX}_hard."
+        f"CORPUS_PROFILE={CORPUS_PROFILE} with the default RESOURCE_PREFIX would add "
+        f"tables to the baseline corpus and make full-01 irreproducible. Set "
+        f"RESOURCE_PREFIX to something else, e.g. {_DEFAULT_RESOURCE_PREFIX}_hard."
     )
     raise ValueError(_msg)
 
@@ -713,7 +610,7 @@ def create_datasets_and_views():
                         client.delete_table(view_ref, not_found_ok=True)
                     view = bigquery.Table(view_ref)
                     view.view_query = expected_query
-                    view.description = _description_for(tier, view_def["description"])
+                    view.description = view_def["description"]
                     client.create_table(view)
                     print(f"    View: {view_def['name']} -> {view_def['source']}")
 
@@ -721,11 +618,8 @@ def create_datasets_and_views():
                 try:
                     source_table = client.get_table(view_def["source"])
                     created_view = client.get_table(view_ref)
-                    # Both sites, not just the creation one: this update runs on
-                    # every pass and overwrites whatever was set above, so
-                    # changing only the other one is a silent no-op.
-                    created_view.schema = _schema_for(tier, source_table.schema)
-                    created_view.description = _description_for(tier, view_def["description"])
+                    created_view.schema = source_table.schema
+                    created_view.description = view_def["description"]
                     client.update_table(created_view, ["schema", "description"])
                 except Exception:
                     pass  # column descriptions are nice-to-have

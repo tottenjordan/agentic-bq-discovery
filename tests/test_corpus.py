@@ -273,7 +273,7 @@ def test_no_profile_set_behaves_as_base(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_the_hard_profile_appends_near_neighbours(monkeypatch: pytest.MonkeyPatch) -> None:
     mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
-    assert len(mod.CORPUS) == 31
+    assert len(mod.CORPUS) == 24
     # Additive: the base tables are still there, unchanged and first.
     assert [v["name"] for v in mod.CORPUS[:15]] == [v["name"] for v in mod.BASE_CORPUS]
 
@@ -343,17 +343,6 @@ def test_a_profile_cannot_be_mixed_into_the_baseline_datasets(
         importlib.reload(setup)
 
 
-def test_the_same_guard_covers_a_bare_tier_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stripping descriptions from the shared tier 0 is just as destructive as
-    adding tables to it, and just as quiet."""
-    import importlib
-
-    monkeypatch.setenv("BARE_TIER0", "1")
-    monkeypatch.delenv("RESOURCE_PREFIX", raising=False)
-    with pytest.raises(ValueError, match=r"would add tables to the baseline corpus|BARE_TIER0"):
-        importlib.reload(setup)
-
-
 def test_a_distinct_prefix_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
     assert mod.tier_dataset(0) == "bigquery_context_hard_tier0"
@@ -378,164 +367,58 @@ def test_setup_and_cleanup_agree_on_what_to_delete(monkeypatch: pytest.MonkeyPat
     assert cleanup.GLOSSARY_TIERS == mod.GLOSSARY_TIERS
 
 
-# ---------------------------------------------------------------------------
-# Optional schema-only tier 0
-#
-# Measured on the live corpus during planning: tier 0 and tier 3 carry *identical*
-# BigQuery metadata -- the same hand-written table description and the same 10
-# described columns. The only difference between the rungs is Dataplex-side. A
-# question like "busiest bike share stations in Austin" matches the tier-0
-# description almost verbatim, so the rungs above it have nothing left to add,
-# which is the likeliest single cause of the flat 0.967.
-# ---------------------------------------------------------------------------
-def _schema_field(name: str, description: str | None, fields: tuple = ()):  # noqa: ANN202
-    from google.cloud import bigquery
-
-    kind = "RECORD" if fields else "STRING"
-    return bigquery.SchemaField(name, kind, description=description, fields=fields)
-
-
-def test_descriptions_are_stripped_from_a_flat_schema() -> None:
-    schema = [_schema_field("a", "keep me out"), _schema_field("b", "and me")]
-    out = setup._without_descriptions(schema)
-    assert [f.name for f in out] == ["a", "b"]
-    assert all(f.description is None for f in out)
+#: Near-neighbour candidates deliberately left out, and the question each would
+#: have corrupted. They are not distractors: for a question that names no place
+#: or no grain, each is a *legitimate* answer, so including it would score a
+#: defensible retrieval as wrong and make any tier effect uninterpretable.
+AMBIGUOUS_RIVALS = {
+    "san_francisco_bikeshare.bikeshare_trips": "multi-rel-q1 names no city",
+    "san_francisco_bikeshare.bikeshare_station_info": "multi-rel-q1 names no city",
+    "new_york_citibike.citibike_trips": "multi-rel-q1 names no city",
+    "noaa_gsod.stations": "multi-rel-q2 — also a weather-station registry",
+    "epa_historical_air_quality.o3_daily_summary": "multi-rel-q3 — also air quality",
+    "sdoh_cdc_wonder_natality.county_natality_by_mother_race": "single-q5 — same measure",
+    # The sharpest: multi-disp-q11 asks per-capita *by county*, the labelled
+    # answer is ZIP-level and needs a crosswalk, and this is county-level
+    # directly -- arguably the better answer, which we would have scored as wrong.
+    "census_bureau_acs.county_2018_5yr": "multi-disp-q11 — better grain than the label",
+}
 
 
-def test_descriptions_are_stripped_recursively() -> None:
-    """Public tables have RECORD fields. A non-recursive strip leaves nested
-    column descriptions in place, which is most of the leak for a wide table."""
-    nested = _schema_field("inner", "nested description")
-    schema = [_schema_field("outer", "outer description", fields=(nested,))]
-    out = setup._without_descriptions(schema)
-    assert out[0].description is None
-    assert out[0].fields[0].name == "inner"
-    assert out[0].fields[0].description is None
+def test_ambiguous_rivals_stay_out_of_the_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE integrity guard.
 
+    Adding tables needs no ground-truth edits *only* while every added table is
+    plausible-but-wrong. Ten of the 25 questions name no place or no grain, and
+    for those a near-neighbour is a legitimate answer rather than a distractor.
+    Re-adding one silently corrupts the labels: recall drops for a correct
+    retrieval and precision drops with it.
 
-def test_the_strip_preserves_names_types_and_modes() -> None:
-    """Tier 0 is meant to be schema-*only*, not schema-damaged. Losing a type or
-    a mode would change what every tier is compared against."""
-    from google.cloud import bigquery
-
-    schema = [bigquery.SchemaField("n", "INTEGER", mode="REQUIRED", description="d")]
-    out = setup._without_descriptions(schema)
-    assert (out[0].name, out[0].field_type, out[0].mode) == ("n", "INTEGER", "REQUIRED")
-
-
-def test_bare_tier0_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("BARE_TIER0", raising=False)
-    import importlib
-
-    assert importlib.reload(setup).BARE_TIER0 is False
-
-
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
-def test_bare_tier0_accepts_the_usual_spellings(
-    monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
-    mod = _reload_setup(monkeypatch, BARE_TIER0=value, RESOURCE_PREFIX="bigquery_context_hard")
-    assert mod.BARE_TIER0 is True
-
-
-def test_the_description_is_only_dropped_at_tier_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    """THE behaviour. Tiers 1-3 must keep what they have always had, or the
-    comparison measures two changes at once."""
-    mod = _reload_setup(monkeypatch, BARE_TIER0="1", RESOURCE_PREFIX="bigquery_context_hard")
-    assert mod._description_for(0, "text") is None
-    for tier in (1, 2, 3):
-        assert mod._description_for(tier, "text") == "text"
-
-
-def test_with_the_switch_off_every_tier_keeps_its_description(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mod = _reload_setup(monkeypatch, BARE_TIER0="", RESOURCE_PREFIX="bigquery_context_hard")
-    for tier in (0, 1, 2, 3):
-        assert mod._description_for(tier, "text") == "text"
-
-
-class _FakeTable:
-    def __init__(self, ref: str) -> None:
-        self.ref, self.description, self.schema, self.view_query = ref, None, [], None
-
-
-def _client_recording_into(written: dict) -> type:
-    """A stand-in bigquery.Client that records the description written per view."""
-
-    def record(table: object) -> None:
-        ref = str(getattr(table, "ref", ""))
-        for tier in (0, 1, 2, 3):
-            if f"_tier{tier}." in ref:
-                written[(tier, ref.rsplit(".", 1)[-1])] = table.description
-
-    class _Client:
-        def __init__(self, **_: object) -> None: ...
-        def create_dataset(self, *_: object, **__: object) -> None: ...
-        def get_table(self, ref: object) -> _FakeTable:
-            return _FakeTable(str(ref))
-
-        def create_table(self, table: object) -> None:
-            record(table)
-
-        def update_table(self, table: object, _fields: object) -> None:
-            record(table)
-
-        def delete_table(self, *_: object, **__: object) -> None: ...
-
-    return _Client
-
-
-class _FakeTable:
-    def __init__(self, ref: str) -> None:
-        self.ref, self.description, self.schema, self.view_query = ref, None, [], None
-
-
-def _client_recording_into(written: dict) -> type:
-    """A stand-in bigquery.Client that records the description written per view."""
-
-    def record(table: object) -> None:
-        ref = str(getattr(table, "ref", ""))
-        for tier in (0, 1, 2, 3):
-            if f"_tier{tier}." in ref:
-                written[(tier, ref.rsplit(".", 1)[-1])] = table.description
-
-    class _Client:
-        def __init__(self, **_: object) -> None: ...
-
-        def create_dataset(self, *_: object, **__: object) -> None: ...
-
-        def get_table(self, ref: object) -> _FakeTable:
-            return _FakeTable(str(ref))
-
-        def create_table(self, table: object) -> None:
-            record(table)
-
-        def update_table(self, table: object, _fields: object) -> None:
-            record(table)
-
-        def delete_table(self, *_: object, **__: object) -> None: ...
-
-    return _Client
-
-
-def test_create_views_applies_the_bare_tier_zero_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Covers the wiring, which the helpers' own tests do not.
-
-    `create_datasets_and_views` sets the description twice -- once on creation,
-    once on the schema copy that runs every pass and overwrites it. Changing only
-    one site is a silent no-op, and every test above still passes. This drives the
-    real function against a stubbed client and reads back what it wrote.
+    If one of these is wanted, label it `nice_to_have` on the affected questions
+    first -- `experiments/GROUND_TRUTH.md` already defines that as "genuinely
+    helps but the question is answerable without it", which is exactly what a
+    peer table is.
     """
-    mod = _reload_setup(monkeypatch, BARE_TIER0="1", RESOURCE_PREFIX="bigquery_context_hard")
-    written: dict[tuple[int, str], object] = {}
-    monkeypatch.setattr("google.cloud.bigquery.Client", _client_recording_into(written))
-    monkeypatch.setattr("google.cloud.bigquery.Table", _FakeTable)
-    mod.create_datasets_and_views()
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    sources = {v["source"] for v in mod.CORPUS}
+    for rival, why in AMBIGUOUS_RIVALS.items():
+        assert f"bigquery-public-data.{rival}" not in sources, f"{rival}: {why}"
 
-    tier0 = {k: v for k, v in written.items() if k[0] == 0}
-    tier1 = {k: v for k, v in written.items() if k[0] == 1}
-    assert tier0, "no tier-0 views were written"
-    assert all(v is None for v in tier0.values()), tier0
-    assert tier1, "no tier-1 views were written"
-    assert all(v for v in tier1.values()), "tiers above 0 must keep their descriptions"
+
+def test_every_added_table_is_wrong_for_every_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No added table may appear in any question's must_have or nice_to_have.
+
+    That is the property which keeps the existing labels correct: `gain_for`
+    returns 0.0 for an unlabelled table, which is right only if the table really
+    is never a correct answer.
+    """
+    import json
+    from pathlib import Path
+
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    added = {v["name"] for v in mod.NEAR_NEIGHBOUR_CORPUS}
+    labelled: set[str] = set()
+    for question in json.loads(Path("experiments/questions.json").read_text()):
+        relevance = question["relevance"]
+        labelled |= set(relevance["must_have"]) | set(relevance.get("nice_to_have", []))
+    assert not (added & labelled), f"added tables that are also answers: {sorted(added & labelled)}"

@@ -76,6 +76,46 @@ GLOSSARY_TIERS = [t for t in TIERS if t >= 2]  # glossary terms + definition lin
 GUIDELINES_TIERS = [t for t in TIERS if t >= 3]  # table-level guidelines aspect
 
 
+def _without_descriptions(schema):
+    """Copy a schema with every description removed, at every depth.
+
+    Recursive because public tables have RECORD fields, and a shallow strip
+    leaves the nested column descriptions in place -- which on a wide table is
+    most of what tier 0 was leaking.
+    """
+    from google.cloud import bigquery
+
+    return [
+        bigquery.SchemaField(
+            field.name,
+            field.field_type,
+            mode=field.mode,
+            description=None,
+            fields=_without_descriptions(field.fields) if field.fields else (),
+        )
+        for field in schema
+    ]
+
+
+def _description_for(tier, description):
+    """The table description to write at ``tier``.
+
+    None at tier 0 when BARE_TIER0 is on, and unchanged everywhere else. Tiers
+    1-3 must keep what they have always had, or a tier-0-to-tier-1 comparison
+    measures two changes at once.
+    """
+    if BARE_TIER0 and tier == 0:
+        return None
+    return description
+
+
+def _schema_for(tier, schema):
+    """The column schema to write at ``tier``, stripped only at a bare tier 0."""
+    if BARE_TIER0 and tier == 0:
+        return _without_descriptions(schema)
+    return schema
+
+
 def tier_dataset(tier: int) -> str:
     """Dataset id holding the corpus at a given enrichment tier."""
     return f"{RESOURCE_PREFIX}_tier{tier}"
@@ -673,7 +713,7 @@ def create_datasets_and_views():
                         client.delete_table(view_ref, not_found_ok=True)
                     view = bigquery.Table(view_ref)
                     view.view_query = expected_query
-                    view.description = view_def["description"]
+                    view.description = _description_for(tier, view_def["description"])
                     client.create_table(view)
                     print(f"    View: {view_def['name']} -> {view_def['source']}")
 
@@ -681,8 +721,11 @@ def create_datasets_and_views():
                 try:
                     source_table = client.get_table(view_def["source"])
                     created_view = client.get_table(view_ref)
-                    created_view.schema = source_table.schema
-                    created_view.description = view_def["description"]
+                    # Both sites, not just the creation one: this update runs on
+                    # every pass and overwrites whatever was set above, so
+                    # changing only the other one is a silent no-op.
+                    created_view.schema = _schema_for(tier, source_table.schema)
+                    created_view.description = _description_for(tier, view_def["description"])
                     client.update_table(created_view, ["schema", "description"])
                 except Exception:
                     pass  # column descriptions are nice-to-have

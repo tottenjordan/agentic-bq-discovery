@@ -376,3 +376,166 @@ def test_setup_and_cleanup_agree_on_what_to_delete(monkeypatch: pytest.MonkeyPat
     assert [v["name"] for v in cleanup.CORPUS] == [v["name"] for v in mod.CORPUS]
     assert cleanup.PROFILED_TIERS == mod.PROFILED_TIERS
     assert cleanup.GLOSSARY_TIERS == mod.GLOSSARY_TIERS
+
+
+# ---------------------------------------------------------------------------
+# Optional schema-only tier 0
+#
+# Measured on the live corpus during planning: tier 0 and tier 3 carry *identical*
+# BigQuery metadata -- the same hand-written table description and the same 10
+# described columns. The only difference between the rungs is Dataplex-side. A
+# question like "busiest bike share stations in Austin" matches the tier-0
+# description almost verbatim, so the rungs above it have nothing left to add,
+# which is the likeliest single cause of the flat 0.967.
+# ---------------------------------------------------------------------------
+def _schema_field(name: str, description: str | None, fields: tuple = ()):  # noqa: ANN202
+    from google.cloud import bigquery
+
+    kind = "RECORD" if fields else "STRING"
+    return bigquery.SchemaField(name, kind, description=description, fields=fields)
+
+
+def test_descriptions_are_stripped_from_a_flat_schema() -> None:
+    schema = [_schema_field("a", "keep me out"), _schema_field("b", "and me")]
+    out = setup._without_descriptions(schema)
+    assert [f.name for f in out] == ["a", "b"]
+    assert all(f.description is None for f in out)
+
+
+def test_descriptions_are_stripped_recursively() -> None:
+    """Public tables have RECORD fields. A non-recursive strip leaves nested
+    column descriptions in place, which is most of the leak for a wide table."""
+    nested = _schema_field("inner", "nested description")
+    schema = [_schema_field("outer", "outer description", fields=(nested,))]
+    out = setup._without_descriptions(schema)
+    assert out[0].description is None
+    assert out[0].fields[0].name == "inner"
+    assert out[0].fields[0].description is None
+
+
+def test_the_strip_preserves_names_types_and_modes() -> None:
+    """Tier 0 is meant to be schema-*only*, not schema-damaged. Losing a type or
+    a mode would change what every tier is compared against."""
+    from google.cloud import bigquery
+
+    schema = [bigquery.SchemaField("n", "INTEGER", mode="REQUIRED", description="d")]
+    out = setup._without_descriptions(schema)
+    assert (out[0].name, out[0].field_type, out[0].mode) == ("n", "INTEGER", "REQUIRED")
+
+
+def test_bare_tier0_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BARE_TIER0", raising=False)
+    import importlib
+
+    assert importlib.reload(setup).BARE_TIER0 is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_bare_tier0_accepts_the_usual_spellings(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    mod = _reload_setup(monkeypatch, BARE_TIER0=value, RESOURCE_PREFIX="bigquery_context_hard")
+    assert mod.BARE_TIER0 is True
+
+
+def test_the_description_is_only_dropped_at_tier_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE behaviour. Tiers 1-3 must keep what they have always had, or the
+    comparison measures two changes at once."""
+    mod = _reload_setup(monkeypatch, BARE_TIER0="1", RESOURCE_PREFIX="bigquery_context_hard")
+    assert mod._description_for(0, "text") is None
+    for tier in (1, 2, 3):
+        assert mod._description_for(tier, "text") == "text"
+
+
+def test_with_the_switch_off_every_tier_keeps_its_description(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _reload_setup(monkeypatch, BARE_TIER0="", RESOURCE_PREFIX="bigquery_context_hard")
+    for tier in (0, 1, 2, 3):
+        assert mod._description_for(tier, "text") == "text"
+
+
+class _FakeTable:
+    def __init__(self, ref: str) -> None:
+        self.ref, self.description, self.schema, self.view_query = ref, None, [], None
+
+
+def _client_recording_into(written: dict) -> type:
+    """A stand-in bigquery.Client that records the description written per view."""
+
+    def record(table: object) -> None:
+        ref = str(getattr(table, "ref", ""))
+        for tier in (0, 1, 2, 3):
+            if f"_tier{tier}." in ref:
+                written[(tier, ref.rsplit(".", 1)[-1])] = table.description
+
+    class _Client:
+        def __init__(self, **_: object) -> None: ...
+        def create_dataset(self, *_: object, **__: object) -> None: ...
+        def get_table(self, ref: object) -> _FakeTable:
+            return _FakeTable(str(ref))
+
+        def create_table(self, table: object) -> None:
+            record(table)
+
+        def update_table(self, table: object, _fields: object) -> None:
+            record(table)
+
+        def delete_table(self, *_: object, **__: object) -> None: ...
+
+    return _Client
+
+
+class _FakeTable:
+    def __init__(self, ref: str) -> None:
+        self.ref, self.description, self.schema, self.view_query = ref, None, [], None
+
+
+def _client_recording_into(written: dict) -> type:
+    """A stand-in bigquery.Client that records the description written per view."""
+
+    def record(table: object) -> None:
+        ref = str(getattr(table, "ref", ""))
+        for tier in (0, 1, 2, 3):
+            if f"_tier{tier}." in ref:
+                written[(tier, ref.rsplit(".", 1)[-1])] = table.description
+
+    class _Client:
+        def __init__(self, **_: object) -> None: ...
+
+        def create_dataset(self, *_: object, **__: object) -> None: ...
+
+        def get_table(self, ref: object) -> _FakeTable:
+            return _FakeTable(str(ref))
+
+        def create_table(self, table: object) -> None:
+            record(table)
+
+        def update_table(self, table: object, _fields: object) -> None:
+            record(table)
+
+        def delete_table(self, *_: object, **__: object) -> None: ...
+
+    return _Client
+
+
+def test_create_views_applies_the_bare_tier_zero_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Covers the wiring, which the helpers' own tests do not.
+
+    `create_datasets_and_views` sets the description twice -- once on creation,
+    once on the schema copy that runs every pass and overwrites it. Changing only
+    one site is a silent no-op, and every test above still passes. This drives the
+    real function against a stubbed client and reads back what it wrote.
+    """
+    mod = _reload_setup(monkeypatch, BARE_TIER0="1", RESOURCE_PREFIX="bigquery_context_hard")
+    written: dict[tuple[int, str], object] = {}
+    monkeypatch.setattr("google.cloud.bigquery.Client", _client_recording_into(written))
+    monkeypatch.setattr("google.cloud.bigquery.Table", _FakeTable)
+    mod.create_datasets_and_views()
+
+    tier0 = {k: v for k, v in written.items() if k[0] == 0}
+    tier1 = {k: v for k, v in written.items() if k[0] == 1}
+    assert tier0, "no tier-0 views were written"
+    assert all(v is None for v in tier0.values()), tier0
+    assert tier1, "no tier-1 views were written"
+    assert all(v for v in tier1.values()), "tiers above 0 must keep their descriptions"

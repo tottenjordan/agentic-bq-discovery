@@ -34,6 +34,8 @@ from typing import NamedTuple
 
 from kfp import dsl
 
+from bq_context.extras import FIGURES_EXTRA as _FIGURES_EXTRA
+
 __all__ = [
     "CONFIG_ENV",
     "CONFIG_ENV_KEYS",
@@ -137,7 +139,9 @@ CONFIG_ENV = config_env(os.environ)
 #: keep in step with the runner.
 #:
 #: Must stay in step with the `figures` extra in pyproject.toml; a test asserts it.
-FIGURES_EXTRA = "paperbanana>=0.1"
+#: Defined in `bq_context.extras` because `finalize`'s body has to import it —
+#: see that module for why it cannot import this one.
+FIGURES_EXTRA = _FIGURES_EXTRA
 
 
 @dsl.component(base_image=RUNNER_IMAGE, install_kfp_package=False)
@@ -457,6 +461,13 @@ def finalize(
         ["bq-context", "report", *base, "--html", summary.path, "--figures", plots_dir],
     )
     if refresh_figures:
+        # Imported here, not referenced from the module: this body is extracted
+        # into a standalone file, so a module-level constant is not in scope and
+        # the line below raised NameError on the first run that reached it.
+        # `bq_context.extras` has no imports and reads no environment, unlike
+        # `components`, which would KeyError on BQ_CONTEXT_IMAGE in the container.
+        from bq_context.extras import FIGURES_EXTRA
+
         # Install the extra here rather than shipping it in the image. It is ~51
         # packages needed by one task on the rare run that asks for figures, and a
         # cold install measures ~3s — far cheaper than a second image nobody can

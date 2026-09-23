@@ -141,6 +141,34 @@ execute.
 now execs every embedded definition in that namespace, which is the only offline
 check for this.
 
+### It applies to the body, not just the annotations
+
+The `Preflight` case was an *annotation*. The same rule bites names used inside
+the body, and that is harder to notice because it only fires when the line runs.
+
+`finalize` referenced `FIGURES_EXTRA`, a module-level constant in
+`components.py`. It compiled, passed every test, and survived a live smoke run —
+because only the `refresh_figures=True` branch touches it, and nothing had ever
+set that. The first run that did:
+
+```
+File "/tmp/.../ephemeral_component.py", line 80, in finalize
+  install = ["uv", "pip", "install", "--python", sys.executable, "-q", FIGURES_EXTRA]
+NameError: name 'FIGURES_EXTRA' is not defined
+```
+
+`test_every_component_body_resolves_in_the_namespace_kfp_gives_it` could not see
+it: that test execs the `def` statement, which proves the *signature* resolves
+and says nothing about the body.
+`test_no_component_body_references_a_module_level_name` now walks each body's
+symbol table and flags any free name the extracted module will not have.
+
+**Importing it back is not always available.** `from bq_context.pipeline.components
+import FIGURES_EXTRA` fails in the container, because that module resolves
+`RUNNER_IMAGE = os.environ["BQ_CONTEXT_IMAGE"]` at import and nothing sets it
+there. The constant moved to `bq_context/extras.py`, which has no imports and
+reads no environment.
+
 ### Writing that test has its own trap
 
 `compile()` **inherits the `__future__` flags of the calling module** unless you

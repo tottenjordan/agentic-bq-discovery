@@ -422,3 +422,58 @@ def test_every_component_body_resolves_in_the_namespace_kfp_gives_it(
             exec(compile(definition, f"<{name}>", "exec", dont_inherit=True), namespace)  # noqa: S102
         except NameError as exc:
             pytest.fail(f"{name} references {exc}, which KFP does not provide at runtime")
+
+
+def test_no_component_body_references_a_module_level_name(spec: dict[str, Any]) -> None:
+    """The bug the *other* body test could not see.
+
+    `test_every_component_body_resolves_in_the_namespace_kfp_gives_it` execs the
+    `def` statement, which proves the annotations resolve. It says nothing about
+    names used *inside* the body, and those fail only when that line runs.
+
+    `finalize` referenced `FIGURES_EXTRA`, a module-level constant in
+    components.py. KFP extracts the function into a standalone file, so the name
+    is simply absent — but only the `refresh_figures=True` branch touches it, so
+    it survived every compile, every test, and one live smoke run before firing:
+
+        NameError: name 'FIGURES_EXTRA' is not defined
+
+    This walks each body's symbol table instead, and flags any free name the
+    extracted module will not have.
+    """
+    import ast
+    import builtins
+    import symtable
+    import typing
+
+    import kfp
+    from kfp import dsl as kfp_dsl
+
+    provided = (
+        set(dir(builtins)) | set(dir(kfp_dsl)) | set(dir(typing)) | {"kfp", "dsl", "NamedTuple"}
+    )
+    del kfp
+
+    offenders: dict[str, list[str]] = {}
+    for executor in spec["deploymentSpec"]["executors"].values():
+        source = executor["container"]["command"][-1]
+        module = ast.parse(source)
+        funcs = [n for n in module.body if isinstance(n, ast.FunctionDef)]
+        for fn in funcs:
+            # Re-render just this def so symtable scopes it on its own.
+            text = ast.unparse(fn)
+            table = symtable.symtable(text, "<component>", "exec")
+            inner = table.get_children()[0]
+            free = {
+                s.get_name()
+                for s in inner.get_symbols()
+                if s.is_global() and not s.is_assigned() and s.get_name() not in provided
+            }
+            if free:
+                offenders[fn.name] = sorted(free)
+
+    assert not offenders, (
+        f"component bodies reference names KFP will not provide: {offenders}. "
+        "A component body is extracted standalone; import what it needs inside "
+        "the function, or inline the value."
+    )

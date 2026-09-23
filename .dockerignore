@@ -20,10 +20,16 @@ tests/
 docs/
 experiments/upstream_baseline/
 
+# PaperBanana writes its full run history here — every iteration of every
+# diagram, 47 MB after a single `bq-context figures`. Gitignored already, which
+# is why it never showed up as a dirty tree, but `gcloud builds submit .` filters
+# on *this* file, so without the entry it rides along in every build context.
+
 # Build artifacts and local scratch
 dist/
 build/
 *.egg-info/
+outputs/
 plots/
 scratch/
 local_results/

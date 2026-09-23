@@ -10,6 +10,7 @@ from the data would be a correctness hazard in a benchmark report.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
@@ -192,3 +193,75 @@ def test_the_models_are_the_current_generation() -> None:
     assert "gemini-3.5-flash" in body
     assert "gemini-3.1-flash-image" in body
     assert "gemini-2.5" not in body
+
+
+# ---------------------------------------------------------------------------
+# Reference examples and the critic's verdict
+# ---------------------------------------------------------------------------
+class _Critique:
+    def __init__(self, suggestions: object) -> None:
+        self.critic_suggestions = suggestions
+
+
+class _Iteration:
+    def __init__(self, suggestions: object) -> None:
+        self.critique = _Critique(suggestions)
+
+
+class _Result:
+    def __init__(self, *iterations: object) -> None:
+        self.iterations = list(iterations)
+
+
+def test_an_unapproved_diagram_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """THE regression. PaperBanana stops at refinement_iterations whether or not
+    the critic is satisfied and returns the last attempt either way. The first
+    pipeline run to produce a diagram had all three iterations flagged
+    needs_revision, and the output said nothing — it looked like a success.
+    """
+    from bq_context.scoring import figures
+
+    result = _Result(_Iteration(None), _Iteration(None), _Iteration(["labels wrap onto two lines"]))
+    with caplog.at_level(logging.WARNING):
+        figures._report_critique("experiment_design", result)
+    assert "still wanted changes after 3 iteration(s)" in caplog.text
+    assert "labels wrap onto two lines" in caplog.text
+
+
+def test_an_approved_diagram_says_so(caplog: pytest.LogCaptureFixture) -> None:
+    from bq_context.scoring import figures
+
+    with caplog.at_level(logging.INFO):
+        figures._report_critique("experiment_design", _Result(_Iteration(None), _Iteration([])))
+    assert "critic approved after 2 iteration(s)" in caplog.text
+    assert "still wanted changes" not in caplog.text
+
+
+def test_a_result_without_iterations_is_not_an_error() -> None:
+    """A stubbed renderer in tests, or a future PaperBanana that drops the field."""
+    from bq_context.scoring import figures
+
+    figures._report_critique("x", _Result())
+    figures._report_critique("x", object())
+
+
+def test_the_critique_is_reported_for_every_render() -> None:
+    """Covers the wiring. `_report_critique` has its own tests, so deleting the
+    call from `render` leaves them all green — found by mutation."""
+    assert "_report_critique(intent, result)" in _renderer_code()
+
+
+def test_the_reference_path_must_be_explicit() -> None:
+    """Measured against the installed package: with the set downloaded to
+    /tmp/pbcache/reference_sets the store reports 295 examples via an explicit
+    path and 0 via either `data/reference_sets` or PAPERBANANA_CACHE_DIR. A
+    future refactor that drops the explicit assignment silently disables
+    retrieval again, which is what produced a rejected diagram.
+    """
+    body = _renderer_code()
+    # Both halves: the set has to be fetched *and* handed to Settings. Asserting
+    # only the assignment passes when the fetch is dead code, which a mutation
+    # demonstrated.
+    assert "_reference_set()" in body
+    assert "settings.reference_set_path = references" in body
+    assert "PaperBananaPipeline(settings=settings)" in body

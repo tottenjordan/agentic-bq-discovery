@@ -153,15 +153,21 @@ def _paperbanana_renderer(key: str) -> Renderer | None:  # pragma: no cover - ne
     # was both wrong and unnecessary. Only the models are pinned, because the
     # shipped defaults are a generation behind (`gemini-2.5-flash`, and a preview
     # image model).
-    pipeline = PaperBananaPipeline(
-        settings=Settings(
-            vlm_model="gemini-3.5-flash",
-            # flash rather than pro: these run unattended on a schedule, where a
-            # 429 costs the whole figure step. Pro is the better choice for a
-            # one-shot figure someone is waiting on.
-            image_model="gemini-3.1-flash-image",
-        )
+    settings = Settings(
+        vlm_model="gemini-3.5-flash",
+        # flash rather than pro: these run unattended on a schedule, where a
+        # 429 costs the whole figure step. Pro is the better choice for a
+        # one-shot figure someone is waiting on.
+        image_model="gemini-3.1-flash-image",
     )
+    references = _reference_set()
+    if references:
+        # An *explicit* path, not the default and not PAPERBANANA_CACHE_DIR.
+        # Measured: with the downloaded set at /tmp/pbcache/reference_sets the
+        # store reports 295 examples via an explicit path and 0 via either
+        # `data/reference_sets` or the env var. Only this works.
+        settings.reference_set_path = references
+    pipeline = PaperBananaPipeline(settings=settings)
 
     def render(source_context: str, intent: str) -> Path | None:
         import asyncio  # noqa: PLC0415
@@ -176,9 +182,67 @@ def _paperbanana_renderer(key: str) -> Renderer | None:  # pragma: no cover - ne
                 )
             )
         )
+        _report_critique(intent, result)
         return _Path(result.image_path) if result.image_path else None
 
     return render
+
+
+def _reference_set() -> str | None:  # pragma: no cover - network, and needs the extra
+    """Path to PaperBananaBench, downloading it once if absent.
+
+    Without it the retriever runs with `examples_found=0 retrieval_mode=disabled`
+    and every diagram is generated with no in-context examples — which is the
+    main quality lever PaperBanana has. The first pipeline run to reach figure
+    generation did exactly that, and its critic rejected all three iterations.
+
+    Fetched at runtime rather than baked into the image, for the same reason the
+    extra itself is: 243 MB and 295 examples that only the figure step ever
+    reads, against 24 shards that would otherwise pull it for nothing. The
+    download measures ~8s and needs no credentials.
+
+    Never fatal. Figures are optional, and generating without examples is worse
+    but still works.
+    """
+    try:
+        from paperbanana.data.manager import DatasetManager  # noqa: PLC0415
+
+        manager = DatasetManager()
+        if not manager.is_downloaded():
+            logger.info("downloading PaperBananaBench reference examples (~243 MB, once)")
+            manager.download(task="diagram", progress_callback=lambda _m: None)
+        return str(manager.reference_dir)
+    except Exception as exc:  # noqa: BLE001 - degraded figures beat no figures
+        logger.warning("could not obtain reference examples (%s); generating without them", exc)
+        return None
+
+
+def _report_critique(name: str, result: object) -> None:
+    """Say so when the critic never signed the diagram off.
+
+    PaperBanana stops at `refinement_iterations` (3) whether or not the critic is
+    satisfied, and returns the last attempt either way. The first pipeline run to
+    produce a diagram ended with all three iterations flagged `needs_revision`,
+    and nothing in the output said so — the figure was published looking like a
+    success. Outstanding suggestions are the difference between "approved" and
+    "we ran out of tries".
+    """
+    iterations = getattr(result, "iterations", None) or []
+    if not iterations:
+        return
+    critique = getattr(iterations[-1], "critique", None)
+    outstanding = getattr(critique, "critic_suggestions", None) if critique else None
+    if not outstanding:
+        logger.info("%s: critic approved after %d iteration(s)", name, len(iterations))
+        return
+    text = outstanding if isinstance(outstanding, str) else "; ".join(map(str, outstanding))
+    logger.warning(
+        "%s: critic still wanted changes after %d iteration(s), publishing the last "
+        "attempt anyway: %s",
+        name,
+        len(iterations),
+        text[:400],
+    )
 
 
 def generate(project: str, out_dir: Path, *, renderer: Renderer | None = None) -> list[Path]:

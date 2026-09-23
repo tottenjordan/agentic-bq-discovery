@@ -49,7 +49,8 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 BQ_LOCATION = os.getenv("BQ_LOCATION", "US")
 DATAPLEX_LOCATION = os.getenv("DATAPLEX_LOCATION", "us-central1")
-RESOURCE_PREFIX = os.getenv("RESOURCE_PREFIX", "bigquery_context")
+_DEFAULT_RESOURCE_PREFIX = "bigquery_context"
+RESOURCE_PREFIX = os.getenv("RESOURCE_PREFIX", _DEFAULT_RESOURCE_PREFIX)
 
 # Region for glossary/term/entry-link resources. Entry links require every
 # referenced entry to live in the link's region (or in ``global``). The BQ table
@@ -122,7 +123,7 @@ DEFINITION_ENTRY_LINK_TYPE = "projects/dataplex-types/locations/global/entryLink
 # "distractor" marks look-alike tables that are never a correct answer — they
 # exist so precision and trap questions are meaningful (see examples/questions.json).
 # ---------------------------------------------------------------------------
-CORPUS = [
+BASE_CORPUS = [
     # --- Transportation ---
     {
         "name": "austin_bikeshare_trips",
@@ -259,6 +260,136 @@ CORPUS = [
         ),
     },
 ]
+
+# ---------------------------------------------------------------------------
+# The optional `hard` profile: near-neighbour tables that look right for an
+# existing question and are wrong for it.
+#
+# Why this needs no ground-truth edits: `scoring/metrics.gain_for` returns 0.0
+# for any table in neither `must_have` nor `nice_to_have`, and precision already
+# treats "distractors and unlabelled tables" alike. So these make the existing 25
+# questions harder while leaving every label correct.
+#
+# Every source below was verified against BigQuery when this list was written.
+# Two candidates were dropped because they do not exist:
+# `epa_historical_air_quality.air_quality_daily_summary` and
+# `geo_us_boundaries.census_tracts_texas`.
+#
+# Descriptions are written in the same register as BASE_CORPUS -- factual, and
+# giving no hint about which question a table does or does not answer. A vaguer
+# description here would make these tables artificially easy to reject, which
+# biases the measurement toward the answer we want.
+# ---------------------------------------------------------------------------
+NEAR_NEIGHBOUR_CORPUS = [
+    # --- Bike share in other cities: the Austin questions must not match these ---
+    # --- Taxi in other cities and years ---
+    {
+        "name": "chicago_taxi_trips",
+        "source": "bigquery-public-data.chicago_taxi_trips.taxi_trips",
+        "description": (
+            "Chicago taxi trip records. Includes pickup and dropoff timestamps and "
+            "community areas, trip miles, fares, tips, and payment type."
+        ),
+    },
+    {
+        "name": "nyc_green_taxi_trips_2022",
+        "source": "bigquery-public-data.new_york_taxi_trips.tlc_green_trips_2022",
+        "description": (
+            "NYC green taxi trip records for 2022. Includes pickup/dropoff times and "
+            "locations, fare amounts, tip amounts, and payment types."
+        ),
+    },
+    # --- Crime and incidents in other cities, plus a second Austin incident feed ---
+    {
+        "name": "austin_incidents_2016",
+        "source": "bigquery-public-data.austin_incidents.incidents_2016",
+        "description": (
+            "Austin police incident reports for 2016, with incident type, address, "
+            "council district, and report date."
+        ),
+    },
+    {
+        "name": "chicago_crime",
+        "source": "bigquery-public-data.chicago_crime.crime",
+        "description": (
+            "Reported crimes in Chicago. Each row is an incident with primary type, "
+            "description, location, arrest flag, and date."
+        ),
+    },
+    {
+        "name": "sfpd_incidents",
+        "source": "bigquery-public-data.san_francisco.sfpd_incidents",
+        "description": (
+            "San Francisco police department incident reports, with category, "
+            "description, resolution, district, and location."
+        ),
+    },
+    # --- A second weather-station registry ---
+    # --- A second air-quality summary at a different grain ---
+    # --- Demographics at a different vintage and grain ---
+    # --- A coarser geographic boundary set ---
+    {
+        "name": "us_states",
+        "source": "bigquery-public-data.geo_us_boundaries.states",
+        "description": (
+            "US state boundaries with state name, FIPS code, postal abbreviation, and geometry."
+        ),
+    },
+    # --- A second labour-statistics series ---
+    {
+        "name": "employment_hours_earnings",
+        "source": "bigquery-public-data.bls.employment_hours_earnings",
+        "description": (
+            "Bureau of Labor Statistics employment, hours, and earnings series by "
+            "industry and period."
+        ),
+    },
+    # --- Thematic noise: plausible city-data tables for none of the questions ---
+    {
+        "name": "nypd_mv_collisions",
+        "source": "bigquery-public-data.new_york.nypd_mv_collisions",
+        "description": (
+            "NYPD motor vehicle collision reports, with date, borough, contributing "
+            "factors, vehicle types, and persons injured or killed."
+        ),
+    },
+    {
+        "name": "austin_waste",
+        "source": "bigquery-public-data.austin_waste.waste_and_diversion",
+        "description": (
+            "Austin waste collection and diversion records, with load type, weight, "
+            "route, and dropoff site."
+        ),
+    },
+]
+
+#: Which table set `ensure-infra` provisions. Opt-in and additive: `base` is the
+#: original 15-table corpus and must stay byte-for-byte reproducible, because
+#: full-01 was measured against it.
+CORPUS_PROFILE = os.getenv("CORPUS_PROFILE", "base").strip().lower()
+
+_PROFILES = {"base": [], "hard": NEAR_NEIGHBOUR_CORPUS}
+
+if CORPUS_PROFILE not in _PROFILES:
+    # Deliberately fatal. Falling back to `base` on a typo gives a run that looks
+    # completely normal and measured the wrong corpus -- and nothing downstream
+    # would ever reveal it.
+    _msg = f"Unknown CORPUS_PROFILE {CORPUS_PROFILE!r}. Valid: {', '.join(sorted(_PROFILES))}"
+    raise ValueError(_msg)
+
+# Refuse to modify the baseline datasets. A profile run against the default
+# prefix adds views to `bigquery_context_tier0..3`, and the damage is invisible
+# afterwards: the datasets still look healthy and preflight still passes, so the
+# next comparison against full-01 is quietly meaningless.
+if CORPUS_PROFILE != "base" and RESOURCE_PREFIX == _DEFAULT_RESOURCE_PREFIX:
+    _msg = (
+        f"CORPUS_PROFILE={CORPUS_PROFILE} with the default RESOURCE_PREFIX would add "
+        f"tables to the baseline corpus and make full-01 irreproducible. Set "
+        f"RESOURCE_PREFIX to something else, e.g. {_DEFAULT_RESOURCE_PREFIX}_hard."
+    )
+    raise ValueError(_msg)
+
+CORPUS = BASE_CORPUS + _PROFILES[CORPUS_PROFILE]
 
 # ---------------------------------------------------------------------------
 # GLOSSARY_TERMS (tiers >= 2) — corpus-wide business terms, authored once.

@@ -105,6 +105,10 @@ SECRET_ID = os.environ.get("SECRET_ID", "")
 CONFIG_ENV_KEYS = (
     "AGENT_MODEL",
     "BQ_LOCATION",
+    # Which table set `ensure-infra` provisions. Read at module scope in
+    # `corpus/setup.py`, not in `ExperimentConfig.from_env`, so the forwarding
+    # guard had to learn to parse that file too -- see tests/test_config_env.py.
+    "CORPUS_PROFILE",
     "DATAPLEX_LOCATION",
     "RESOURCE_PREFIX",
     "TOOL_MODEL",

@@ -18,10 +18,14 @@ These tests cover both in milliseconds.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
 from google.cloud import dataplex_v1
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 from bq_context.corpus import cleanup, setup
 
@@ -222,3 +226,199 @@ def test_punctuation_only_differences_collide_on_the_short_path() -> None:
     silently share a resource, and the uniqueness tests above are what catch it.
     """
     assert setup._bounded_id("a_b") == setup._bounded_id("a-b") == setup._bounded_id("a.b")
+
+
+# ---------------------------------------------------------------------------
+# Corpus profiles
+#
+# The 15-table corpus cannot separate the tiers: on a converged index all three
+# search approaches score 0.967 discovery recall at *every* rung. `hard` appends
+# near-neighbour tables that look right and are wrong, making discovery
+# selective again.
+#
+# It is additive and opt-in on purpose. `full-01` has to stay reproducible, so
+# the default profile must keep producing byte-for-byte today's corpus.
+#
+# No ground-truth edits are needed: `metrics.gain_for` returns 0.0 for any table
+# that is in neither `must_have` nor `nice_to_have`, and precision already counts
+# distractors and unlabelled tables alike.
+# ---------------------------------------------------------------------------
+def _reload_setup(monkeypatch: pytest.MonkeyPatch, **env: str) -> ModuleType:
+    """Re-import setup.py under a given environment.
+
+    The profile is resolved at import, like RESOURCE_PREFIX, so a fixture that
+    only sets the variable is too late.
+    """
+    import importlib
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return importlib.reload(setup)
+
+
+def test_the_default_profile_is_todays_corpus_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE reproducibility guard. Anything that changes this invalidates full-01."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="base")
+    assert [v["name"] for v in mod.CORPUS] == [v["name"] for v in mod.BASE_CORPUS]
+    assert len(mod.CORPUS) == 15
+
+
+def test_no_profile_set_behaves_as_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CORPUS_PROFILE", raising=False)
+    import importlib
+
+    mod = importlib.reload(setup)
+    assert len(mod.CORPUS) == 15
+
+
+def test_the_hard_profile_appends_near_neighbours(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    assert len(mod.CORPUS) == 24
+    # Additive: the base tables are still there, unchanged and first.
+    assert [v["name"] for v in mod.CORPUS[:15]] == [v["name"] for v in mod.BASE_CORPUS]
+
+
+def test_an_unknown_profile_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never fall back to base. A typo that silently selects the small corpus
+    produces a run that looks fine and measured the wrong thing."""
+    import importlib
+
+    monkeypatch.setenv("CORPUS_PROFILE", "haard")
+    with pytest.raises(ValueError, match="Unknown CORPUS_PROFILE"):
+        importlib.reload(setup)
+
+
+@pytest.mark.parametrize("profile", ["base", "hard"])
+def test_names_and_sources_are_unique(monkeypatch: pytest.MonkeyPatch, profile: str) -> None:
+    """A duplicate name would silently overwrite a view; a duplicate source would
+    put the same table in the corpus twice under two names."""
+    mod = _reload_setup(
+        monkeypatch, CORPUS_PROFILE=profile, RESOURCE_PREFIX=f"bigquery_context_{profile}"
+    )
+    names = [v["name"] for v in mod.CORPUS]
+    sources = [v["source"] for v in mod.CORPUS]
+    assert len(set(names)) == len(names)
+    assert len(set(sources)) == len(sources)
+
+
+def test_every_entry_is_fully_specified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing description would make a hard-corpus table strictly easier to
+    ignore than a base one, which biases the very thing being measured."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    for view in mod.CORPUS:
+        assert set(view) >= {"name", "source", "description"}, view
+        assert view["source"].startswith("bigquery-public-data."), view["source"]
+        assert view["description"].strip()
+
+
+def test_the_tables_that_do_not_exist_are_not_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both were checked against BigQuery during planning and are absent. Listing
+    either fails `ensure-infra` forty minutes in, on view creation."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    sources = {v["source"] for v in mod.CORPUS}
+    assert (
+        "bigquery-public-data.epa_historical_air_quality.air_quality_daily_summary" not in sources
+    )
+    assert "bigquery-public-data.geo_us_boundaries.census_tracts_texas" not in sources
+
+
+# ---------------------------------------------------------------------------
+# Guarding the baseline datasets
+# ---------------------------------------------------------------------------
+def test_a_profile_cannot_be_mixed_into_the_baseline_datasets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE guard, and the one whose absence is expensive.
+
+    `CORPUS_PROFILE=hard` with the default RESOURCE_PREFIX would add 16 views to
+    `bigquery_context_tier0..3`, destroying the reproducibility this whole option
+    exists to protect. The damage is not obvious afterwards: the datasets still
+    look healthy, preflight still passes, and only the table count betrays it.
+    """
+    import importlib
+
+    monkeypatch.setenv("CORPUS_PROFILE", "hard")
+    monkeypatch.delenv("RESOURCE_PREFIX", raising=False)
+    with pytest.raises(ValueError, match="would add tables to the baseline corpus"):
+        importlib.reload(setup)
+
+
+def test_a_distinct_prefix_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    assert mod.tier_dataset(0) == "bigquery_context_hard_tier0"
+
+
+def test_setup_and_cleanup_agree_on_what_to_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cleanup.py imports CORPUS and the tier thresholds from setup.py, so it
+    removes whatever the *current* environment selects. Run under a different
+    profile or prefix than the one that provisioned, and it orphans scans and
+    entry links instead of deleting them -- and stale catalog resources survive a
+    rebuild, which is how a later run inherits enrichment it was never meant to
+    see.
+    """
+    import importlib
+
+    from bq_context.corpus import cleanup
+
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    importlib.reload(cleanup)
+    assert [v["name"] for v in cleanup.CORPUS] == [v["name"] for v in mod.CORPUS]
+    assert cleanup.PROFILED_TIERS == mod.PROFILED_TIERS
+    assert cleanup.GLOSSARY_TIERS == mod.GLOSSARY_TIERS
+
+
+#: Near-neighbour candidates deliberately left out, and the question each would
+#: have corrupted. They are not distractors: for a question that names no place
+#: or no grain, each is a *legitimate* answer, so including it would score a
+#: defensible retrieval as wrong and make any tier effect uninterpretable.
+AMBIGUOUS_RIVALS = {
+    "san_francisco_bikeshare.bikeshare_trips": "multi-rel-q1 names no city",
+    "san_francisco_bikeshare.bikeshare_station_info": "multi-rel-q1 names no city",
+    "new_york_citibike.citibike_trips": "multi-rel-q1 names no city",
+    "noaa_gsod.stations": "multi-rel-q2 — also a weather-station registry",
+    "epa_historical_air_quality.o3_daily_summary": "multi-rel-q3 — also air quality",
+    "sdoh_cdc_wonder_natality.county_natality_by_mother_race": "single-q5 — same measure",
+    # The sharpest: multi-disp-q11 asks per-capita *by county*, the labelled
+    # answer is ZIP-level and needs a crosswalk, and this is county-level
+    # directly -- arguably the better answer, which we would have scored as wrong.
+    "census_bureau_acs.county_2018_5yr": "multi-disp-q11 — better grain than the label",
+}
+
+
+def test_ambiguous_rivals_stay_out_of_the_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE integrity guard.
+
+    Adding tables needs no ground-truth edits *only* while every added table is
+    plausible-but-wrong. Ten of the 25 questions name no place or no grain, and
+    for those a near-neighbour is a legitimate answer rather than a distractor.
+    Re-adding one silently corrupts the labels: recall drops for a correct
+    retrieval and precision drops with it.
+
+    If one of these is wanted, label it `nice_to_have` on the affected questions
+    first -- `experiments/GROUND_TRUTH.md` already defines that as "genuinely
+    helps but the question is answerable without it", which is exactly what a
+    peer table is.
+    """
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    sources = {v["source"] for v in mod.CORPUS}
+    for rival, why in AMBIGUOUS_RIVALS.items():
+        assert f"bigquery-public-data.{rival}" not in sources, f"{rival}: {why}"
+
+
+def test_every_added_table_is_wrong_for_every_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No added table may appear in any question's must_have or nice_to_have.
+
+    That is the property which keeps the existing labels correct: `gain_for`
+    returns 0.0 for an unlabelled table, which is right only if the table really
+    is never a correct answer.
+    """
+    import json
+    from pathlib import Path
+
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    added = {v["name"] for v in mod.NEAR_NEIGHBOUR_CORPUS}
+    labelled: set[str] = set()
+    for question in json.loads(Path("experiments/questions.json").read_text()):
+        relevance = question["relevance"]
+        labelled |= set(relevance["must_have"]) | set(relevance.get("nice_to_have", []))
+    assert not (added & labelled), f"added tables that are also answers: {sorted(added & labelled)}"

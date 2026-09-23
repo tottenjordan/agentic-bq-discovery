@@ -1307,35 +1307,25 @@ def compile_pipeline_cmd(
     typer.echo(str(path))
 
 
-def _build_source(out: str, credentials: Credentials | None, sha: str) -> str:
-    """Upload `git archive HEAD` for Cloud Build, and return its gs:// URI.
-
-    `git archive`, not the working directory: it contains exactly the tracked
-    files at HEAD, so the tarball always describes the commit the image tag names.
-    Uploading the directory instead would let uncommitted edits into an image
-    tagged with a SHA that does not describe them — the "cache lie" the SHA tag
-    exists to prevent. It also means untracked files cannot be swept in, `.env`
-    among them.
-    """
-    archive = subprocess.run(
-        ["git", "archive", "--format=tar.gz", "HEAD"],  # noqa: S607
-        capture_output=True,
-        check=True,
-        timeout=120,
+def _image_exists(image: str) -> bool:
+    """Whether the tag is already in Artifact Registry."""
+    return (
+        subprocess.run(  # noqa: S603
+            ["gcloud", "artifacts", "docker", "images", "describe", image],  # noqa: S607
+            capture_output=True,
+            check=False,
+            timeout=300,
+        ).returncode
+        == 0
     )
-    store = store_for(out, credentials)
-    path = f"build-source/{sha}.tar.gz"
-    store.write_bytes(path, archive.stdout, "application/gzip")
-    return store.uri(path)
 
 
 def _require_clean_tree() -> None:
-    """Refuse to submit from a dirty tree when the pipeline will build the image.
+    """Refuse to build from a dirty tree.
 
-    `make image` has always refused this; the in-pipeline build has to refuse it
-    for the same reason. The image is tagged with the HEAD SHA, so building from
-    anything other than HEAD produces a tag that lies about its contents, and the
-    KFP cache then treats two different images as the same one.
+    `make image` has always refused this, for the reason the SHA tag exists: an
+    image tagged with the HEAD SHA must contain the HEAD commit, or the KFP cache
+    treats two different images as the same one.
     """
     dirty = subprocess.run(
         ["git", "status", "--porcelain"],  # noqa: S607
@@ -1348,12 +1338,72 @@ def _require_clean_tree() -> None:
         typer.secho(
             "Working tree is dirty. The runner image is tagged with the HEAD SHA, "
             "so building from uncommitted changes would produce a tag that does "
-            "not describe its contents. Commit, stash, or pass --image to use an "
-            "image that already exists.",
+            "not describe its contents. Commit, stash, or pass --image.",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(2)
+
+
+def ensure_image(image: str, tag: str, region: str = "") -> None:
+    """Build and push ``image`` if Artifact Registry does not already have it.
+
+    **Before the job is created, not as a pipeline task.** The first attempt made
+    this the pipeline's own first step, which cannot work: Vertex validates every
+    statically-referenced image when the job is *created*, so a run whose image
+    did not yet exist was rejected outright —
+
+        Failed to create pipeline job. Error: The image ... does not exist.
+
+    — and the task that would have built it never ran. A task can only ever have
+    confirmed an image that was already there, which is no use to anyone.
+
+    A runtime `set_container_image` channel *is* exempt from that validation
+    (verified), so the five ordinary tasks could have taken a built image. But
+    `finalize` is the `ExitHandler` exit task, may not depend on anything, and so
+    needs a static reference that already resolves. Something therefore has to
+    exist before creation no matter what, and once that is true, doing the whole
+    job here is simpler and needs no new pipeline permissions.
+
+    Skip-if-exists, so resubmitting at an already-built commit costs one registry
+    lookup rather than a build.
+    """
+    import os  # noqa: PLC0415
+
+    if _image_exists(image):
+        typer.echo(f"image     {image} (already built)")
+        return
+
+    _require_clean_tree()
+    typer.echo(f"image     {image} not found; building")
+    region = region or os.environ.get("BQ_CONTEXT_BUILD_REGION", "us-central1")
+    build = subprocess.run(  # noqa: S603
+        [  # noqa: S607 - gcloud from PATH, as it is for `make image`
+            "gcloud",
+            "builds",
+            "submit",
+            "--region",
+            region,
+            "--config",
+            "cloudbuild.yaml",
+            f"--substitutions=_TAG={tag}",
+            ".",
+        ],
+        check=False,
+        timeout=3600,
+    )
+    if build.returncode != 0:
+        typer.secho("Cloud Build failed; not submitting.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    # Cloud Build can report success before the push is visible. The job would
+    # otherwise be rejected at creation with a bare "image does not exist".
+    if not _image_exists(image):
+        typer.secho(
+            f"Build reported success but {image} is still not in the registry.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 @app.command("submit-pipeline")
@@ -1424,23 +1474,16 @@ def submit_pipeline_cmd(
         )
         raise typer.Exit(2)
 
-    # Source for the in-pipeline image build. Skipped when --image names an
-    # image that already exists: ensure_image checks Artifact Registry first, so
-    # the common path costs one lookup rather than a build.
-    source_uri = ""
-    build_config = ""
+    # Before compiling: Vertex rejects job creation outright when a statically
+    # referenced image is absent, so this has to happen here rather than as a
+    # pipeline step.
     if not image:
-        _require_clean_tree()
-        build_config = Path("cloudbuild.yaml").read_text()
-        source_uri = _build_source(out, _credentials(""), sha)
-        typer.echo(f"source    {source_uri}")
+        ensure_image(os.environ["BQ_CONTEXT_IMAGE"], sha)
 
     params = {
         "project": config.project,
         "experiment_id": experiment_id,
         "out": out,
-        "source_uri": source_uri,
-        "build_config": build_config,
         "code_version": sha,
         "service_account": service_account,
         "skip_infra": skip_infra,

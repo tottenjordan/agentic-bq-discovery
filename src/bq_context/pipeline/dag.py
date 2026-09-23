@@ -100,11 +100,6 @@ def bq_context_pipeline(
     # KFP resolves these defaults into the spec; they are never mutated.
     tiers: list = DEFAULT_TIERS,
     approaches: list = DEFAULT_APPROACHES,
-    # Empty disables the in-pipeline build: the image must then already exist.
-    # Sent by `submit-pipeline`, which uploads `git archive HEAD` and refuses a
-    # dirty tree, so the tarball always describes the commit the tag names.
-    source_uri: str = "",
-    build_config: str = "",
     skip_infra: bool = False,
     require_complete: bool = True,
     refresh_figures: bool = False,
@@ -115,26 +110,7 @@ def bq_context_pipeline(
     resubmitting with the same value resumes rather than restarting. Never
     derive it from a timestamp inside the pipeline.
     """
-    # First, and before anything pulls the runner image. Every other task is
-    # pinned to RUNNER_IMAGE at compile time; this makes that tag exist. A
-    # reference only has to resolve when a task starts, not when the spec is
-    # compiled, which is what lets one ordering constraint cover all six tasks —
-    # including `finalize`, which as an exit task cannot depend on anything and
-    # so could never have been handed a runtime image.
-    build = components.ensure_image(
-        image=components.RUNNER_IMAGE,
-        source_uri=source_uri,
-        build_config=build_config,
-        region=components.BUILD_REGION,
-    )
-    build.set_display_name("ensure runner image")
-    build.set_retry(num_retries=0)
-    # Cloud Build state lives outside this pipeline, and noticing that the image
-    # is missing is the entire job.
-    build.set_caching_options(enable_caching=False)
-
     validate = components.validate_config(project=project, out=out, expect_identity=service_account)
-    validate.after(build)
     _apply_config_env(validate)
     validate.set_display_name("validate config")
     validate.set_retry(num_retries=0)

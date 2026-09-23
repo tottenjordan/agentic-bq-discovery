@@ -634,6 +634,10 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
         return {t: 3 + (len(calls) - 1) for t in tiers}
 
     monkeypatch.setattr(cli, "_credentials", lambda _: None)
+    # Without this the test is not hermetic: `_effective_identity(None)` resolves
+    # Application Default Credentials, which pass on a developer box and raise
+    # DefaultCredentialsError in CI — where it failed, having passed locally.
+    monkeypatch.setattr(cli, "_effective_identity", lambda _: "sa@test-project.iam")
     monkeypatch.setattr(cli, "_search_hits_by_tier", _probe)
     monkeypatch.setattr(
         cli,

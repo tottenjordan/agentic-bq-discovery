@@ -28,6 +28,11 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 from bq_context.corpus import cleanup, setup
+from bq_context.corpus.manifest import (
+    corpus_manifest,
+    corpus_prefix,
+    provisioned_path,
+)
 
 #: Dataplex entry-link and DataScan ids: lowercase letters, digits and hyphens,
 #: starting with a letter, ending with a letter or digit, at most 63 characters.
@@ -479,3 +484,79 @@ def test_link_ids_stay_valid_under_a_longer_prefix(monkeypatch: pytest.MonkeyPat
     for link_id in ids:
         assert DATAPLEX_ID.match(link_id), link_id
         assert len(link_id) <= ID_LIMIT, f"{link_id} is {len(link_id)}"
+
+
+# ---------------------------------------------------------------------------
+# Recording what was provisioned
+#
+# The corpus existed only as a Python list in a vendored file. A run's bucket
+# recorded its results but not what they were measured against, so answering
+# "what was in hard-full-01's corpus?" meant finding the commit and reading
+# setup.py at it. The fingerprint is on every cell and in the BigQuery sink;
+# this is what a reader lands on after grouping by it.
+# ---------------------------------------------------------------------------
+def test_the_manifest_describes_every_table_in_the_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    manifest = corpus_manifest(mod)
+
+    assert manifest["table_count"] == len(mod.CORPUS)
+    assert [t["name"] for t in manifest["tables"]] == [v["name"] for v in mod.CORPUS]
+    assert all(t["source"].startswith("bigquery-public-data.") for t in manifest["tables"])
+
+
+def test_the_manifest_keeps_the_descriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A description is tier-0 enrichment — schema, in this experiment's terms —
+    so it is part of what the corpus *is*, not commentary about it."""
+    manifest = corpus_manifest(_reload_setup(monkeypatch, CORPUS_PROFILE="base"))
+    assert all(t["description"] for t in manifest["tables"])
+
+
+def test_the_manifest_names_the_profile_and_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both are environment variables set in a shell; without them recorded, the
+    two things that decide which corpus got built leave no trace."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    manifest = corpus_manifest(mod)
+    assert manifest["corpus_profile"] == "hard"
+    assert manifest["resource_prefix"] == "bigquery_context_hard"
+    assert manifest["tiers"] == mod.TIERS
+
+
+def test_two_profiles_produce_different_manifests(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = corpus_manifest(_reload_setup(monkeypatch, CORPUS_PROFILE="base"))
+    hard = corpus_manifest(
+        _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    )
+    assert hard["table_count"] > base["table_count"]
+    assert {t["name"] for t in base["tables"]} < {t["name"] for t in hard["tables"]}
+
+
+def test_the_manifest_is_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It is written to GCS, so a value json cannot serialise is a runtime
+    failure in the one command whose job is to leave a record behind."""
+    import json
+
+    manifest = corpus_manifest(_reload_setup(monkeypatch, CORPUS_PROFILE="base"))
+    assert json.loads(json.dumps(manifest)) == manifest
+
+
+def test_the_corpus_prefix_is_keyed_by_fingerprint() -> None:
+    """Not by resource prefix. A prefix is reused as enrichment changes and the
+    record would be overwritten; fingerprints accumulate instead."""
+    assert corpus_prefix("13f9fcb4") == "corpus/13f9fcb4"
+
+
+@pytest.mark.parametrize("hostile", ["", "  ", "a/b", ".."])
+def test_a_fingerprint_that_would_escape_its_folder_is_refused(hostile: str) -> None:
+    with pytest.raises(ValueError, match="fingerprint"):
+        corpus_prefix(hostile)
+
+
+def test_the_provisioned_record_is_keyed_by_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ensure-infra` cannot know the fingerprint: that is a hash of the
+    *provisioned* state, which does not exist until it finishes. It records what
+    it built under the prefix it built it in, and preflight adds the fingerprint
+    afterwards."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    assert provisioned_path(mod.RESOURCE_PREFIX) == "corpus/provisioned/bigquery_context_hard.json"

@@ -795,7 +795,11 @@ def validate_config(
 
     try:
         store = store_for(out, credentials)
-        store.write_text("_validate_config", "ok\n")
+        # Under `_scratch/`, not at the bucket root. The root holds four things
+        # a reader needs to recognise — corpus, experiments, pipeline_root and
+        # this — and a three-byte probe sitting among them reads like one of
+        # them. Overwritten on every run; nothing reads it back.
+        store.write_text("_scratch/validate_config", "ok\n")
         typer.echo(f"storage            writable ({store.uri('')})")
     except Exception as exc:  # noqa: BLE001
         problems.append(f"Storage not writable at {out}: {type(exc).__name__}: {exc}")
@@ -853,9 +857,62 @@ def ensure_infra(
     from bq_context.corpus import setup  # noqa: PLC0415
 
     setup.main()
+
+    # Leave a record of what was built. Without it the corpus exists only as a
+    # list in a vendored file, and "what was hard-full-01 measured against?" is
+    # answerable only by finding the commit and reading setup.py at it. Best
+    # effort: 40 minutes of provisioning must not be reported as a failure
+    # because a diagnostics file could not be written.
+    from bq_context.corpus.manifest import provisioned_path, provisioned_record  # noqa: PLC0415
+    from bq_context.runner.store import store_for  # noqa: PLC0415
+
+    try:
+        store = store_for(out)
+        target = provisioned_path(setup.RESOURCE_PREFIX)
+        record = provisioned_record(
+            setup, config.project, _effective_identity(_credentials("")) or "(ADC)"
+        )
+        store.write_text(target, json.dumps(record, indent=2, sort_keys=True) + "\n")
+        typer.echo(f"recorded           {store.uri(target)}")
+    except Exception as exc:  # noqa: BLE001 - a missing record is not a failed build
+        typer.secho(f"WARN  could not record what was provisioned: {exc}", fg=typer.colors.YELLOW)
+
     typer.secho(
         "\nInfrastructure ready. Run `bq-context preflight --tier 3` next.", fg=typer.colors.GREEN
     )
+
+
+def _record_corpus(out: str, fingerprint: str, ladder: list[dict[str, Any]]) -> None:
+    """Describe this corpus under ``corpus/{fingerprint}/``.
+
+    Two files with two jobs. ``manifest.json`` is what the corpus *is* — the
+    tables, their sources and their descriptions — and is identical for anyone
+    who builds the same one. ``ladder.json`` is what preflight *measured* about
+    it: bytes and enrichment counts per tier, which is the evidence that the
+    tiers actually differ.
+
+    Written from ``preflight`` rather than ``ensure-infra`` because the
+    fingerprint hashes the provisioned state, which does not exist until
+    provisioning finishes. Best effort: preflight is a gate, and it must pass or
+    fail on enrichment, never on whether a record could be written.
+    """
+    from bq_context.corpus import setup  # noqa: PLC0415
+    from bq_context.corpus.manifest import corpus_manifest, corpus_prefix  # noqa: PLC0415
+    from bq_context.runner.store import store_for  # noqa: PLC0415
+
+    if not out:
+        return
+    try:
+        store = store_for(out)
+        prefix = corpus_prefix(fingerprint)
+        for name, payload in (
+            ("manifest.json", corpus_manifest(setup)),
+            ("ladder.json", {"fingerprint": fingerprint, "ladder": ladder}),
+        ):
+            store.write_text(f"{prefix}/{name}", json.dumps(payload, indent=2, sort_keys=True))
+        typer.echo(f"recorded            {store.uri(prefix)}/")
+    except Exception as exc:  # noqa: BLE001 - the gate's verdict must not depend on this
+        typer.secho(f"WARN  could not record the corpus: {exc}", fg=typer.colors.YELLOW, err=True)
 
 
 @app.command()
@@ -900,6 +957,7 @@ def preflight(
         Path | None,
         typer.Option("--json", help="Also write the ladder and corpus fingerprint here."),
     ] = None,
+    out: OutOpt = DEFAULT_OUT,
     settle: Annotated[
         int,
         typer.Option(
@@ -1016,6 +1074,8 @@ def preflight(
         )
         typer.echo(f"wrote {json_out}", err=True)
 
+    _record_corpus(out, fingerprint, ladder)
+
     gained = ladder[-1]["bytes"] - ladder[0]["bytes"]
     typer.secho(
         f"\nOK — tier {tier} carries {gained:,} bytes more context than tier {baseline}.",
@@ -1081,8 +1141,20 @@ def run_shard(
     )
 
     from bq_context.runner.cells import execute_shard  # noqa: PLC0415
+    from bq_context.runner.resume import note_experiment_identity  # noqa: PLC0415
 
-    result = execute_shard(spec, config, store_for(out), questions)
+    store = store_for(out)
+    # Before the work, not after: the point is to be visible at the head of the
+    # log a resumed run produces, alongside the decision to reuse the prefix.
+    for warning in note_experiment_identity(
+        store,
+        experiment_id,
+        corpus_fingerprint=spec.corpus_fingerprint,
+        code_version=spec.code_version,
+    ):
+        typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)
+
+    result = execute_shard(spec, config, store, questions)
     typer.echo(result.model_dump_json(indent=2))
 
     # Exit non-zero when the shard did not finish cleanly, so KFP's retry can act
@@ -1555,9 +1627,17 @@ def submit_pipeline_cmd(
     if not image:
         ensure_image(os.environ["BQ_CONTEXT_IMAGE"], sha)
 
+    # Minted here, once, and sent as a parameter. Generated inside the pipeline
+    # instead, every task would mint its own and the run's artifacts would land
+    # in as many folders as there are tasks that write one.
+    from bq_context.runner.resume import new_run_id  # noqa: PLC0415
+
+    run_id = new_run_id(sha)
+
     params = {
         "project": config.project,
         "experiment_id": experiment_id,
+        "run_id": run_id,
         "out": out,
         "code_version": sha,
         "service_account": service_account,

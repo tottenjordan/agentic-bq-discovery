@@ -94,6 +94,7 @@ def bq_context_pipeline(
     out: str,
     experiment_id: str = "pilot-01",
     code_version: str = "unknown",
+    run_id: str = "",
     service_account: str = "",
     runs: int = 5,
     question_limit: int = 0,
@@ -109,6 +110,11 @@ def bq_context_pipeline(
     ``experiment_id`` is load-bearing: the GCS prefix derives from it, so
     resubmitting with the same value resumes rather than restarting. Never
     derive it from a timestamp inside the pipeline.
+
+    ``run_id`` is the opposite: unique per *execution*, so each one's report and
+    figures get their own folder instead of overwriting the last. It comes in as
+    a parameter for the same reason ``experiment_id`` does — generated inside the
+    pipeline, each task would mint a different one and scatter the output.
     """
     validate = components.validate_config(project=project, out=out, expect_identity=service_account)
     _apply_config_env(validate)
@@ -131,7 +137,15 @@ def bq_context_pipeline(
     infra.after(validate)
     infra.set_caching_options(enable_caching=False)
 
-    check = components.preflight(project=project, tier=3, baseline=0)
+    check = components.preflight(
+        project=project,
+        tier=3,
+        baseline=0,
+        # So it can leave the fingerprint where the exit task will look for it.
+        out=out,
+        experiment_id=experiment_id,
+        run_id=run_id,
+    )
     _apply_config_env(check)
     check.set_display_name("preflight: enrichment is real")
     check.set_retry(num_retries=0)
@@ -151,6 +165,12 @@ def bq_context_pipeline(
     finalize = components.finalize(
         project=project,
         experiment_id=experiment_id,
+        run_id=run_id,
+        code_version=code_version,
+        # Resolved by Vertex at run time. The manifest is the only place the job
+        # that produced a run folder is recorded, and it is what someone needs
+        # to find the logs months later.
+        pipeline_job=dsl.PIPELINE_JOB_RESOURCE_NAME_PLACEHOLDER,
         out=out,
         runs=runs,
         tiers=tiers,

@@ -15,9 +15,11 @@ Two independent mechanisms stack here:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from bq_context.runner.models import Cell
 
@@ -32,11 +34,18 @@ __all__ = [
     "experiment_prefix",
     "latest_attempt_number",
     "load_shard_records",
+    "new_run_id",
     "next_attempt_path",
+    "note_experiment_identity",
+    "run_prefix",
     "shard_prefix",
 ]
 
 _ATTEMPT_RE = re.compile(r"attempt-(\d{4})\.jsonl$")
+
+#: A run id is a path segment, so it must not contain one. Timestamp-plus-SHA
+#: fits comfortably; anything with a separator in it is a caller error.
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +66,112 @@ def experiment_prefix(experiment_id: str) -> str:
 def shard_prefix(spec: ShardSpec) -> str:
     """Directory holding one shard's attempt files and markers."""
     return f"{experiment_prefix(spec.experiment_id)}/shards/{spec.shard_id}"
+
+
+def new_run_id(code_version: str, now: datetime | None = None) -> str:
+    """Identity for one *execution* of an experiment.
+
+    ``experiment_id`` is stable so resume can find prior work, which means every
+    execution of the same experiment previously wrote its report, HTML and
+    figures over the last one's. ``hard-full-01`` ran three times and kept one
+    report. This gives each execution somewhere of its own.
+
+    Timestamp first so lexical order is time order — a bucket listing is then
+    chronological — and the commit after it so the folder says what produced it
+    without opening the manifest inside. Not the Vertex job id: a local run has
+    none, and the job id goes in the manifest instead.
+
+    ``now`` exists for the tests; nothing in the codebase passes it.
+    """
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{code_version}"
+
+
+def run_prefix(experiment_id: str, run_id: str) -> str:
+    """Root for one execution's derived artifacts — report, HTML, figures.
+
+    Under the experiment, not beside it: everything one experiment produced
+    stays in one listing, and the shard and merged prefixes are untouched so
+    resume keeps working.
+    """
+    if not _RUN_ID_RE.match(run_id):
+        msg = f"not a usable run id: {run_id!r}"
+        raise ValueError(msg)
+    return f"{experiment_prefix(experiment_id)}/runs/{run_id}"
+
+
+# ---------------------------------------------------------------------------
+# Experiment identity
+# ---------------------------------------------------------------------------
+
+
+def experiment_record_path(experiment_id: str) -> str:
+    """Where an experiment's first corpus and commit are recorded."""
+    return f"{experiment_prefix(experiment_id)}/experiment.json"
+
+
+def note_experiment_identity(
+    store: ArtifactStore, experiment_id: str, *, corpus_fingerprint: str, code_version: str
+) -> list[str]:
+    """Record what this experiment was first run against; warn if it has changed.
+
+    ``experiment_prefix`` is derived from ``experiment_id`` alone, deliberately,
+    so a resumed run finds the previous one's shards. The hazard is the same
+    property seen from the other side: resuming ``hard-full-01`` after switching
+    ``CORPUS_PROFILE`` appends cells measured against a second corpus to the
+    first one's shards and merges both into one results file. Nothing else
+    notices — the KFP shard cache keys on the fingerprint, so those cells are
+    legitimately new work.
+
+    A warning rather than an error. Re-running after repairing a corpus is a
+    reasonable thing to do, and ``finalize`` is the only task allowed to turn a
+    run red. It fires once per shard, so 24 times on a full sweep; that is the
+    price of checking somewhere a standalone ``run-shard`` also reaches.
+
+    A changed ``code_version`` is recorded but never warned about: a new commit
+    is what invalidates the shard cache, so every resubmit after an edit has one.
+
+    Never raises. This runs at the head of a 90-minute shard, and a diagnostics
+    file that cannot be read is not a reason to refuse the work.
+    """
+    path = experiment_record_path(experiment_id)
+    try:
+        previous: dict[str, Any] = json.loads(store.read_text(path))
+    except Exception:  # noqa: BLE001 - absent is the first run; torn is not fatal either
+        previous = {}
+
+    if not previous:
+        try:
+            store.write_text(
+                path,
+                json.dumps(
+                    {
+                        "experiment_id": experiment_id,
+                        "corpus_fingerprint": corpus_fingerprint,
+                        "code_version": code_version,
+                        "first_run_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not record the identity of %s", experiment_id)
+        return []
+
+    # An empty fingerprint is "not known" — a local run-shard without
+    # --corpus-fingerprint — not a different corpus. Comparing it would warn on
+    # every ad-hoc run and say nothing true.
+    was = previous.get("corpus_fingerprint", "")
+    if not corpus_fingerprint or not was or corpus_fingerprint == was:
+        return []
+    warning = (
+        f"{experiment_id} was first run against corpus {was} and is now "
+        f"{corpus_fingerprint}. Resuming will mix two corpora in one results "
+        f"file. Use a new --experiment-id, or delete the existing shards."
+    )
+    return [warning]
 
 
 def latest_attempt_number(store: ArtifactStore, spec: ShardSpec) -> int:

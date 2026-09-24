@@ -10,6 +10,8 @@ completed under one shard plan is still recognised under a different one.
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,7 +24,10 @@ from bq_context.runner.resume import (
     completed_keys,
     latest_attempt_number,
     load_shard_records,
+    new_run_id,
     next_attempt_path,
+    note_experiment_identity,
+    run_prefix,
     shard_prefix,
 )
 from bq_context.runner.store import LocalStore, store_for
@@ -218,6 +223,50 @@ def test_shard_prefix_is_stable_across_reruns() -> None:
     assert shard_prefix(spec) == f"experiments/pilot-01/shards/{shard_id(3, 'bq_tools')}"
 
 
+# ---------------------------------------------------------------------------
+# Run identity
+#
+# `experiment_prefix` is deliberately stable so resume works, which means every
+# execution of one experiment id wrote its report, HTML and figures to the same
+# paths. `hard-full-01` ran three times and kept one report: the two earlier
+# ones — including the failed run whose report was the evidence for the shard
+# exit-code bug — were overwritten. `run_id` gives each execution its own folder
+# for derived output while leaving the shard and merged paths alone.
+# ---------------------------------------------------------------------------
+def test_two_runs_get_different_ids() -> None:
+    assert new_run_id("abc1234") != new_run_id("abc1234", now=datetime(2026, 9, 24, tzinfo=UTC))
+
+
+def test_a_run_id_sorts_chronologically() -> None:
+    """Lexical order must equal time order, or `gcloud storage ls` lists a
+    bucket's runs in an order that means nothing."""
+    early = new_run_id("aaa", now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
+    late = new_run_id("aaa", now=datetime(2026, 11, 2, 3, 4, 5, tzinfo=UTC))
+    assert early < late
+
+
+def test_a_run_id_names_the_commit_that_produced_it() -> None:
+    """So the folder is readable without opening the manifest inside it."""
+    assert new_run_id("14b273a", now=datetime(2026, 9, 24, 16, 46, 12, tzinfo=UTC)) == (
+        "20260924T164612Z-14b273a"
+    )
+
+
+def test_the_run_prefix_nests_under_the_experiment() -> None:
+    assert run_prefix("hard-full-01", "20260924T164612Z-14b273a") == (
+        "experiments/hard-full-01/runs/20260924T164612Z-14b273a"
+    )
+
+
+@pytest.mark.parametrize("hostile", ["../../etc", "a/b", "", "   "])
+def test_a_run_id_that_would_escape_its_folder_is_refused(hostile: str) -> None:
+    """A run id reaches this from a pipeline parameter, so it is caller input.
+    A slash would silently nest the run under a path nobody looks in; `..` would
+    write over another experiment."""
+    with pytest.raises(ValueError, match="run id"):
+        run_prefix("exp", hostile)
+
+
 @pytest.mark.parametrize("status", ["ok", "error"])
 def test_cell_serializes_round_trip(status: str) -> None:
     original = make_cell("q1|kc_search|tier1|run2", status=status, latency_s=1.25)
@@ -225,3 +274,79 @@ def test_cell_serializes_round_trip(status: str) -> None:
     assert restored.cell_key == original.cell_key
     assert restored.status == status
     assert restored.latency_s == 1.25
+
+
+# ---------------------------------------------------------------------------
+# Experiment identity
+#
+# `experiment_prefix` is derived from `experiment_id` alone, so resuming
+# `hard-full-01` after switching CORPUS_PROFILE would append cells measured
+# against a second corpus to the first one's shards, merge them into one
+# results.jsonl, and say nothing. Nothing else in the system would notice: the
+# KFP shard cache keys on the fingerprint, so the new cells are legitimately
+# new work.
+# ---------------------------------------------------------------------------
+def test_a_first_run_records_its_identity_and_says_nothing(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []
+    assert json.loads(store.read_text("experiments/exp/experiment.json"))["corpus_fingerprint"] == (
+        "aaa"
+    )
+
+
+def test_the_same_corpus_stays_silent(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []
+
+
+def test_a_changed_corpus_warns_and_names_both(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    warnings = note_experiment_identity(store, "exp", corpus_fingerprint="bbb", code_version="v1")
+
+    assert len(warnings) == 1
+    # Both, so the reader can tell which is the surprise without going digging.
+    assert "aaa" in warnings[0]
+    assert "bbb" in warnings[0]
+
+
+def test_a_changed_code_version_alone_does_not_warn(tmp_path: Path) -> None:
+    """It is *expected*: a new commit is what invalidates the shard cache, and
+    every resubmit after an edit has one. Warning here would fire on the normal
+    path 24 times a run and teach everyone to ignore the channel."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v9") == []
+
+
+def test_the_first_corpus_is_not_overwritten_by_a_later_one(tmp_path: Path) -> None:
+    """The record is what the experiment *was*. Letting the second run replace it
+    means the third run compares against the second and the collision goes
+    quiet — the bug hides itself after one resume."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    note_experiment_identity(store, "exp", corpus_fingerprint="bbb", code_version="v1")
+    third = note_experiment_identity(store, "exp", corpus_fingerprint="bbb", code_version="v1")
+
+    assert third, "the collision went silent on the third run"
+    assert json.loads(store.read_text("experiments/exp/experiment.json"))["corpus_fingerprint"] == (
+        "aaa"
+    )
+
+
+def test_an_unknown_fingerprint_is_not_worth_warning_about(tmp_path: Path) -> None:
+    """A local `run-shard` with no --corpus-fingerprint passes "". Comparing it
+    against a recorded one would warn on every ad-hoc run, and comparing two
+    empties says nothing anyway."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="", code_version="v1") == []
+
+
+def test_a_torn_record_does_not_stop_the_shard(tmp_path: Path) -> None:
+    """This runs at the head of a 90-minute shard. A diagnostics file that
+    cannot be parsed is not a reason to refuse to do the work."""
+    store = LocalStore(tmp_path)
+    store.write_text("experiments/exp/experiment.json", "{not json")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []

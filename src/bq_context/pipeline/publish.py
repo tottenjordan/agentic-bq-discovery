@@ -14,13 +14,16 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from bq_context.runner.resume import experiment_prefix
+from bq_context.runner.resume import run_prefix
 from bq_context.scoring.merge import missing_path
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from bq_context.runner.store import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -30,32 +33,153 @@ logger = logging.getLogger(__name__)
 #: merge itself failed, and a missing report is information, not a crash.
 EMPTY_REPORT: dict[str, Any] = {"expected": 0, "present": 0, "missing_count": 0, "missing": []}
 
+#: What preflight's record looks like when it is absent or torn. Same reasoning
+#: as EMPTY_REPORT: the exit task runs on the broken runs too.
+EMPTY_PREFLIGHT: dict[str, Any] = {"fingerprint": "", "ladder": []}
 
-def publish_report(store: ArtifactStore, experiment_id: str, report_path: str) -> str | None:
-    """Copy the markdown report to the stable experiment prefix. Returns its path."""
+
+def publish_report(
+    store: ArtifactStore, experiment_id: str, run_id: str, report_path: str
+) -> str | None:
+    """Copy the markdown report to this execution's folder. Returns its path.
+
+    Not a KFP artifact path: those embed the pipeline job id and change every
+    run, so the copy a human goes looking for weeks later would not be there.
+    Not the bare experiment prefix either — that is one path per *experiment*,
+    and the second execution of an experiment id silently overwrote the first.
+    """
     source = Path(report_path)
     if not source.exists():
         logger.warning("No report at %s; nothing to publish", report_path)
         return None
-    target = f"{experiment_prefix(experiment_id)}/scoring/report.md"
+    target = f"{run_prefix(experiment_id, run_id)}/scoring/report.md"
     store.write_text(target, source.read_text())
     return target
 
 
-def publish_figures(store: ArtifactStore, experiment_id: str, plots_dir: str) -> list[str]:
-    """Copy every PNG to the stable prefix. Returns the paths written.
+def publish_figures(
+    store: ArtifactStore, experiment_id: str, run_id: str, plots_dir: str
+) -> list[str]:
+    """Copy every PNG to this execution's folder. Returns the paths written.
 
     ``write_bytes`` rather than ``write_text``: the latter hard-codes
     ``application/json``, which uploads the right bytes under a type that makes a
     browser download the figure instead of showing it.
     """
-    prefix = experiment_prefix(experiment_id)
+    prefix = run_prefix(experiment_id, run_id)
     written = []
     for png in sorted(Path(plots_dir).glob("*.png")):
         target = f"{prefix}/plots/{png.name}"
         store.write_bytes(target, png.read_bytes(), "image/png")
         written.append(target)
     return written
+
+
+def preflight_path(experiment_id: str, run_id: str) -> str:
+    """Where preflight leaves what it measured, for the exit task to read back.
+
+    Storage rather than a KFP task output, deliberately. ``finalize`` is an
+    ``ExitHandler`` exit task whose whole value is that it runs when something
+    upstream died; taking ``preflight``'s output as an input would make it
+    depend on a task that is allowed to fail. Reading a file degrades to
+    ``EMPTY_PREFLIGHT`` instead, which is the same bargain ``merge_report``
+    already makes.
+    """
+    return f"{run_prefix(experiment_id, run_id)}/preflight.json"
+
+
+def run_preflight(store: ArtifactStore, experiment_id: str, run_id: str) -> dict[str, Any]:
+    """What preflight measured for this run, or ``EMPTY_PREFLIGHT``. Never raises."""
+    try:
+        return json.loads(store.read_text(preflight_path(experiment_id, run_id)))
+    except Exception:  # noqa: BLE001 - a missing or torn record must not lose the manifest
+        logger.warning("No preflight record for run %s; corpus will be unidentified", run_id)
+        return dict(EMPTY_PREFLIGHT)
+
+
+def effective_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """``environ`` with the corpus identity resolved to what is actually in effect.
+
+    The distinction matters, and the first live run found it. ``.env`` carries
+    ``RESOURCE_PREFIX`` but not ``CORPUS_PROFILE``, so only the first is
+    forwarded to the tasks and the container falls back to ``setup.py``'s
+    default. The manifest therefore said ``corpus_profile: ""`` for a run that
+    measured ``base`` — and "" reads as *unknown*, which is worse than wrong in
+    the one file whose entire job is provenance.
+
+    ``setup.py`` resolves both defaults at import and is what every other reader
+    of these values uses, so it is the single source of truth rather than a
+    default repeated here. Best effort: it raises on an invalid profile, and a
+    run that got that far has 24 shards' worth of evidence it did not.
+    """
+    resolved = dict(environ)
+    try:
+        # Imported here, not at module scope: setup.py raises on an invalid
+        # CORPUS_PROFILE, and publish.py is imported by a component body that
+        # must not fail for a diagnostics reason.
+        from bq_context.corpus import setup  # noqa: PLC0415
+
+        resolved["CORPUS_PROFILE"] = environ.get("CORPUS_PROFILE") or setup.CORPUS_PROFILE
+        resolved["RESOURCE_PREFIX"] = environ.get("RESOURCE_PREFIX") or setup.RESOURCE_PREFIX
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not resolve the corpus identity; recording it as configured")
+    return resolved
+
+
+def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
+    # them into a dataclass would add a type used at one call site and hide none
+    # of the coupling.
+    *,
+    experiment_id: str,
+    run_id: str,
+    code_version: str,
+    pipeline_job: str,
+    runs: int,
+    tiers: list,
+    approaches: list,
+    question_limit: int,
+    report: Mapping[str, Any],
+    corpus: Mapping[str, Any],
+    environ: Mapping[str, str],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Everything needed to say what a run was, as a plain dict.
+
+    Pure, so it is testable without a store or a pipeline. A folder of PNGs and
+    a markdown file says nothing about the commit, the corpus or the
+    configuration behind it; this is what makes the folder self-describing.
+
+    ``missing`` is deliberately excluded — ``missing.json`` already holds it, and
+    on a badly broken run it is three thousand strings.
+    """
+    return {
+        "run_id": run_id,
+        "experiment_id": experiment_id,
+        "code_version": code_version,
+        "pipeline_job": pipeline_job,
+        "corpus_fingerprint": corpus.get("fingerprint", ""),
+        "resource_prefix": environ.get("RESOURCE_PREFIX", ""),
+        "corpus_profile": environ.get("CORPUS_PROFILE", ""),
+        "agent_model": environ.get("AGENT_MODEL", ""),
+        "tool_model": environ.get("TOOL_MODEL", ""),
+        "runs": runs,
+        "tiers": list(tiers),
+        "approaches": list(approaches),
+        "question_limit": question_limit,
+        "expected": report.get("expected", 0),
+        "present": report.get("present", 0),
+        "missing_count": report.get("missing_count", 0),
+        "written_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
+    }
+
+
+def publish_manifest(
+    store: ArtifactStore, experiment_id: str, run_id: str, manifest: Mapping[str, Any]
+) -> str:
+    """Write the manifest beside the artifacts it explains. Returns its path."""
+    target = f"{run_prefix(experiment_id, run_id)}/manifest.json"
+    store.write_text(target, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return target
 
 
 def merge_report(store: ArtifactStore, experiment_id: str) -> dict[str, Any]:
@@ -121,11 +245,13 @@ def ensure_placeholder(path: str, body: str) -> None:
         target.write_text(body)
 
 
-def publish_summary(store: ArtifactStore, experiment_id: str, summary_path: str) -> str | None:
-    """Copy the executive HTML to the stable prefix. Returns its path."""
+def publish_summary(
+    store: ArtifactStore, experiment_id: str, run_id: str, summary_path: str
+) -> str | None:
+    """Copy the executive HTML to this execution's folder. Returns its path."""
     source = Path(summary_path)
     if not source.exists():
         return None
-    target = f"{experiment_prefix(experiment_id)}/scoring/executive.html"
+    target = f"{run_prefix(experiment_id, run_id)}/scoring/executive.html"
     store.write_text(target, source.read_text())
     return target

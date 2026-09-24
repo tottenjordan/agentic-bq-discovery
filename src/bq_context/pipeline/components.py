@@ -208,6 +208,9 @@ def preflight(
     baseline: int,
     ladder: dsl.Output[dsl.Markdown],
     tier_metrics: dsl.Output[dsl.Metrics],
+    out: str = "",
+    experiment_id: str = "",
+    run_id: str = "",
 ) -> NamedTuple("Preflight", [("fingerprint", str)]):  # ty: ignore[invalid-type-form]
     """Assert catalog enrichment is real, and publish the corpus fingerprint.
 
@@ -219,6 +222,11 @@ def preflight(
     Returns the enrichment fingerprint, which ``dag.py`` threads into every shard
     as a cache-key input. Without it, changing the corpus and resubmitting under
     the same commit returns cells scored against the old corpus.
+
+    Also copies what it measured to ``runs/{run_id}/preflight.json``. The exit
+    task needs the fingerprint for its manifest and cannot take it as a task
+    output — it is an ``ExitHandler`` exit task, and depending on a task that is
+    allowed to fail would cost the guarantee that it always runs.
 
     The **functional** ``NamedTuple(...)`` form is load-bearing, not a style
     choice. KFP extracts this function into a standalone ``ephemeral_component.py``
@@ -265,6 +273,21 @@ def preflight(
 
     with open(payload_path) as handle:  # noqa: PTH123
         payload = json.load(handle)
+
+    # Before the artifact rendering below, which can raise on a malformed
+    # payload: the fingerprint is what the exit task needs most, and losing it
+    # to a table-formatting error would be a poor trade. Best effort — a run
+    # must not go red because a diagnostics copy failed.
+    if out and experiment_id and run_id:
+        try:
+            from bq_context.pipeline.publish import preflight_path
+            from bq_context.runner.store import store_for
+
+            target = preflight_path(experiment_id, run_id)
+            store_for(out).write_text(target, json.dumps(payload))
+            print(f"preflight {out}/{target}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN  could not record preflight: {exc}", flush=True)
 
     rows = payload["ladder"]
     lines = [
@@ -407,6 +430,9 @@ def finalize(
     report: dsl.Output[dsl.Markdown],
     summary: dsl.Output[dsl.HTML],
     run_metrics: dsl.Output[dsl.Metrics],
+    run_id: str = "",
+    code_version: str = "",
+    pipeline_job: str = "",
     require_complete: bool = True,
     question_limit: int = 0,
     refresh_figures: bool = False,
@@ -490,23 +516,27 @@ def finalize(
         if completed.returncode != 0:
             print(f"WARN  {args[1]} exited {completed.returncode}", flush=True)
 
-    # Upload to the stable experiment prefix rather than a KFP artifact path.
-    # Artifact URIs embed the pipeline job id and change every run; these are the
-    # copies a human goes looking for weeks later.
+    # Upload to this run's folder rather than a KFP artifact path. Artifact URIs
+    # embed the pipeline job id and change every run; these are the copies a
+    # human goes looking for weeks later.
     from bq_context.pipeline.publish import (
+        effective_env,
         ensure_placeholder,
         merge_report,
         publish_figures,
+        publish_manifest,
         publish_report,
         publish_summary,
+        run_manifest,
+        run_preflight,
     )
     from bq_context.runner.resume import experiment_prefix
     from bq_context.runner.store import store_for
 
     store = store_for(out)
-    if published := publish_report(store, experiment_id, report.path):
+    if published := publish_report(store, experiment_id, run_id, report.path):
         print(f"report    {store.uri(published)}", flush=True)
-    for figure in publish_figures(store, experiment_id, plots_dir):
+    for figure in publish_figures(store, experiment_id, run_id, plots_dir):
         print(f"figure    {store.uri(figure)}", flush=True)
 
     # Populate every artifact *before* anything can raise. SystemExit propagates
@@ -517,13 +547,40 @@ def finalize(
     ensure_placeholder(
         summary.path, f"<html><body><h1>{experiment_id}</h1><p>No report.</p></body></html>"
     )
-    publish_summary(store, experiment_id, summary.path)
+    publish_summary(store, experiment_id, run_id, summary.path)
 
     report_json = merge_report(store, experiment_id)
+
+    # The run folder's index. Written after the report so a reader who finds a
+    # manifest can rely on the artifacts beside it, and before the completeness
+    # check below so a red run still gets one — a failed run is exactly when
+    # someone needs to know what it was running.
+    manifest = run_manifest(
+        experiment_id=experiment_id,
+        run_id=run_id,
+        code_version=code_version,
+        pipeline_job=pipeline_job,
+        runs=runs,
+        tiers=tiers,
+        approaches=approaches,
+        question_limit=question_limit,
+        report=report_json,
+        corpus=run_preflight(store, experiment_id, run_id),
+        # Not os.environ directly: CORPUS_PROFILE is absent from .env, so it is
+        # never forwarded and the container falls back to setup.py's default.
+        # The first live manifest said corpus_profile "" for a run that measured
+        # base.
+        environ=effective_env(os.environ),
+    )
+    print(f"manifest  {store.uri(publish_manifest(store, experiment_id, run_id, manifest))}")
+
     merged.uri = store.uri(f"{experiment_prefix(experiment_id)}/merged/results.jsonl")
     merged.metadata.update(
         {
             "experiment_id": experiment_id,
+            "run_id": run_id,
+            "code_version": code_version,
+            "corpus_fingerprint": manifest["corpus_fingerprint"],
             "expected": report_json["expected"],
             "present": report_json["present"],
             "missing_count": report_json["missing_count"],

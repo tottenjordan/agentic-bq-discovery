@@ -72,6 +72,9 @@ notes.
   handing a JSON column a string silently makes the table write-only.
 - [The test suite](test-suite.md) — why 59% is close to honest, test the seams rather than both
   sides of them, and mutation-test every guard (three here once asserted nothing).
+- [The GCS layout](gcs-layout.md) — which paths resume depends on and therefore may never be
+  versioned, which must be versioned (re-running an experiment id used to destroy its previous
+  report), and why the corpus is keyed by fingerprint rather than resource prefix.
 
 ## How to run it
 

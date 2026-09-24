@@ -154,6 +154,30 @@ Failed cells are recorded, not fatal, and re-run on the next pass. A shard that
 fails systematically trips a circuit breaker rather than burning its full retry
 budget.
 
+Resuming under a **different corpus** is the one thing to watch. The prefix
+derives from `experiment_id` alone, so switching `CORPUS_PROFILE` and resuming
+would mix two corpora into one results file. `run-shard` records the corpus an
+experiment id was first run against and warns — it does not refuse, since
+re-running after repairing a corpus is legitimate. Heed it: use a new
+`--experiment-id`.
+
+### Where the output goes
+
+```
+gs://{bucket}/
+├── corpus/{fingerprint}/      what the corpus is, and what preflight measured
+└── experiments/{id}/
+    ├── shards/ merged/        stable paths; this is what resume reads
+    └── runs/{timestamp}-{sha}/
+        ├── manifest.json      the commit, corpus and config behind this run
+        ├── scoring/report.md  scoring/executive.html  plots/*.png
+```
+
+Each *execution* gets its own `runs/` folder, so re-running an experiment id no
+longer overwrites the previous run's report. The shard and merged paths stay put,
+which is what makes resume work. Full reasoning in
+[docs/notes/gcs-layout.md](../docs/notes/gcs-layout.md).
+
 ## Reading the report
 
 `bq-context score` prints four sections:

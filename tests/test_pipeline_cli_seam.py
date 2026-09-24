@@ -111,9 +111,24 @@ def _invocations(component: str) -> list[list[str]]:
         captured.append(list(args))
         return _Completed()
 
-    # Suppress everything: a component may legitimately sys.exit() on the stubbed
+    # The store is stubbed, not suppressed. `finalize` looks up the question
+    # snapshot *before* building its merge argv, so a real `store_for` here
+    # raises against conftest's fake project and the component builds nothing --
+    # which reads as "the component stopped shelling out" rather than "the test
+    # has no credentials".
+    import tempfile
+
+    from bq_context.runner import store as store_module
+
+    # Suppress the rest: a component may legitimately sys.exit() on the stubbed
     # return code, or reach GCS after building its argv, and argv is all we test.
-    with mock.patch.object(subprocess, "run", _record), contextlib.suppress(BaseException):
+    with (
+        mock.patch.object(subprocess, "run", _record),
+        mock.patch.object(
+            store_module, "store_for", return_value=store_module.LocalStore(tempfile.mkdtemp())
+        ),
+        contextlib.suppress(BaseException),
+    ):
         getattr(components, component).python_func(**COMPONENT_ARGS[component])
     return [a for a in captured if a and a[0] == "bq-context"]
 
@@ -222,9 +237,18 @@ def _all_invocations(component: str, **over: Any) -> list[list[str]]:
     class _Completed:
         returncode = 0
 
+    # Same store stub as `_argv_for`, and for the same reason: `finalize` reads
+    # the question snapshot before it builds any argv.
+    import tempfile
+
+    from bq_context.runner import store as store_module
+
     with (
         mock.patch.object(
             subprocess, "run", lambda a, **_k: (captured.append(list(a)), _Completed())[1]
+        ),
+        mock.patch.object(
+            store_module, "store_for", return_value=store_module.LocalStore(tempfile.mkdtemp())
         ),
         contextlib.suppress(BaseException),
     ):
@@ -251,3 +275,38 @@ def test_requesting_figures_installs_the_extra_then_renders() -> None:
     render = next(i for i, a in enumerate(argv) if a[:2] == ["bq-context", "figures"])
     assert components.FIGURES_EXTRA in install
     assert argv.index(install) < render, "the install must precede the render"
+
+
+def test_finalize_merges_against_the_question_set_the_sweep_ran(tmp_path: Path) -> None:
+    """Covers the wiring, which the `merge_args` tests do not.
+
+    Dropping the `questions=` argument from finalize's `merge_args` call leaves
+    every one of them green, because they build argv directly. Found by
+    mutation — the same gap, one function over, as the preflight gate.
+
+    The consequence if it regresses: a custom sweep has every real cell
+    unexpected and every built-in question missing, so `require_complete` fails
+    a run that is perfectly healthy.
+    """
+    from bq_context.runner import store as store_module
+
+    store = store_module.LocalStore(tmp_path)
+    store.write_text("experiments/e/questions.json", "{}")
+
+    captured: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+
+    with (
+        mock.patch.object(
+            subprocess, "run", lambda a, **_k: (captured.append(list(a)), _Completed())[1]
+        ),
+        mock.patch.object(store_module, "store_for", return_value=store),
+        contextlib.suppress(BaseException),
+    ):
+        components.finalize.python_func(**COMPONENT_ARGS["finalize"])
+
+    merge = next(a for a in captured if a[:2] == ["bq-context", "merge"])
+    assert "--questions" in merge, merge
+    assert merge[merge.index("--questions") + 1].endswith("experiments/e/questions.json")

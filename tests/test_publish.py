@@ -23,6 +23,7 @@ from bq_context.pipeline.publish import (
     publish_report,
     run_manifest,
     run_preflight,
+    snapshot_questions_uri,
 )
 from bq_context.runner.store import LocalStore
 from bq_context.scoring.merge import missing_path
@@ -300,3 +301,37 @@ def test_no_limit_flag_when_unset() -> None:
 @pytest.mark.parametrize("flag", ["--experiment-id", "--out", "--runs"])
 def test_the_required_flags_are_present(flag: str) -> None:
     assert flag in merge_args("e", "gs://b", runs=5, tiers=[0], approaches=["a"])
+
+
+# ---------------------------------------------------------------------------
+# merge must score the questions the sweep actually ran
+#
+# `merge` computes expected cells from a question set. If the shards ran a
+# custom set and the exit task uses the image's baked-in 25, every real cell is
+# "unexpected" and every built-in question is "missing" -- so `require_complete`
+# fails a run that is perfectly healthy. `merge_args` already carries this exact
+# warning for `question_limit`.
+# ---------------------------------------------------------------------------
+def test_merge_reads_the_snapshot_when_the_sweep_had_one(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text("experiments/byoq/questions.json", "{}")
+
+    uri = snapshot_questions_uri(store, "byoq")
+    assert uri.endswith("experiments/byoq/questions.json")
+    assert "--questions" in merge_args(
+        "byoq", "out", runs=1, tiers=[3], approaches=["a"], questions=uri
+    )
+
+
+def test_merge_falls_back_to_the_packaged_set_for_an_old_experiment(tmp_path: Path) -> None:
+    """`full-01` and `hard-full-01` predate the snapshot. Nothing migrates them,
+    so `merge` and `score` against them must keep working untouched."""
+    assert snapshot_questions_uri(LocalStore(tmp_path), "full-01") == ""
+    assert "--questions" not in merge_args("full-01", "out", runs=5, tiers=[0], approaches=["a"])
+
+
+def test_the_questions_flag_carries_the_uri() -> None:
+    args = merge_args(
+        "e", "out", runs=1, tiers=[3], approaches=["a"], questions="gs://b/e/questions.json"
+    )
+    assert args[args.index("--questions") + 1] == "gs://b/e/questions.json"

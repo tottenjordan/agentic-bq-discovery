@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from bq_context.runner.resume import run_prefix
+from bq_context.runner.resume import experiment_prefix, run_prefix
 from bq_context.scoring.merge import missing_path
 
 if TYPE_CHECKING:
@@ -195,7 +195,22 @@ def merge_report(store: ArtifactStore, experiment_id: str) -> dict[str, Any]:
         return dict(EMPTY_REPORT)
 
 
-def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a dataclass
+def snapshot_questions_uri(store: ArtifactStore, experiment_id: str) -> str:
+    """The sweep's question snapshot, or ``""`` if it predates them.
+
+    Separate from ``merge_args`` so that one stays pure and testable without a
+    store, and so ``finalize`` can call it as an argument expression — that
+    function is at its statement limit and has no room for a lookup.
+
+    The empty return is the backward-compatibility path. ``full-01`` and
+    ``hard-full-01`` were swept before snapshots existed, nothing migrates them,
+    and ``merge`` against them must keep working off the packaged set.
+    """
+    path = f"{experiment_prefix(experiment_id)}/questions.json"
+    return store.uri(path) if store.exists(path) else ""
+
+
+def merge_args(  # noqa: PLR0913 - these are merge's own parameters; a dataclass
     # wrapper would add a type for a single call site and hide nothing.
     experiment_id: str,
     out: str,
@@ -204,6 +219,7 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
     tiers: list,
     approaches: list,
     question_limit: int = 0,
+    questions: str = "",
 ) -> list[str]:
     """Build the `bq-context merge` argv the exit task runs.
 
@@ -213,6 +229,12 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
     ``question_limit`` must match what the shards actually ran. Omitting it makes
     merge expect the full question set and report phantom missing cells, which
     then fails the run for a completeness problem that does not exist.
+
+    ``questions`` is the same hazard one level up, and a worse version of it.
+    Merge computes expected cells from a question set; if the shards ran a custom
+    one and the exit task uses the image's baked-in 25, then *every* real cell is
+    unexpected and *every* built-in question is missing. Empty means the sweep
+    predates snapshots, where the packaged default is the right answer.
     """
     args = [
         "bq-context",
@@ -224,6 +246,8 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
         "--runs",
         str(runs),
     ]
+    if questions:
+        args += ["--questions", questions]
     if question_limit:
         args += ["--limit", str(question_limit)]
     for tier in tiers:

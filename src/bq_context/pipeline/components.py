@@ -469,7 +469,8 @@ def finalize(
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
     base = ["--experiment-id", experiment_id, "--out", out]
 
-    from bq_context.pipeline.publish import merge_args
+    from bq_context.pipeline.publish import merge_args, snapshot_questions_uri
+    from bq_context.runner.store import store_for
 
     merge = merge_args(
         experiment_id,
@@ -478,6 +479,11 @@ def finalize(
         tiers=tiers,
         approaches=approaches,
         question_limit=question_limit,
+        # The set the shards ran, not the image's. Without this the exit task
+        # computes expected cells from the baked-in 25, so a custom sweep has
+        # every real cell unexpected and every built-in question missing --
+        # and `require_complete` fails a healthy run.
+        questions=snapshot_questions_uri(store_for(out), experiment_id),
     )
 
     # Give score and plot real destinations. Both flags already existed and were
@@ -539,7 +545,6 @@ def finalize(
         run_preflight,
     )
     from bq_context.runner.resume import experiment_prefix
-    from bq_context.runner.store import store_for
 
     store = store_for(out)
     if published := publish_report(store, experiment_id, run_id, report.path):

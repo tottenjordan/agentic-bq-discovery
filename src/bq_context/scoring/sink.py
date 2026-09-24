@@ -47,6 +47,7 @@ SCALAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("status", "STRING"),
     ("written_at", "TIMESTAMP"),
     ("code_version", "STRING"),
+    ("corpus_fingerprint", "STRING"),
     ("category", "STRING"),
     ("question", "STRING"),
     ("nominated_count", "INTEGER"),
@@ -105,6 +106,15 @@ COLUMN_DESCRIPTIONS: dict[str, str] = {
         "Short git SHA that produced the cell. Threaded into the KFP cache key so "
         "a code change cannot silently return cached results. full-01 mixes "
         "5de0dde (2,993 cells) and 28a7b2c (7 re-run on resume)."
+    ),
+    "corpus_fingerprint": (
+        "Short hash of the corpus's enrichment shape -- table count, profiled "
+        "columns, glossary terms and aspects per tier. Identifies *which corpus* "
+        "produced the row, so results from different corpora in this table can be "
+        "told apart and compared. Filter or group on it alongside experiment_id; "
+        "an experiment id is a naming convention, this is a measured fact. "
+        "Deliberately excludes capsule bytes and search-hit counts, which drift "
+        "between runs without the corpus changing."
     ),
     "category": (
         "Question class: single-table, multi-table-related, multi-table-disparate, "

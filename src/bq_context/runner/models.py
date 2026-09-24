@@ -77,6 +77,10 @@ class Cell(BaseModel):
     status: CellStatus
     written_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     code_version: str = ""
+    #: Which corpus produced this cell. Identity, like code_version: without it
+    #: two corpora in one results table are distinguishable only by an
+    #: experiment-id naming convention.
+    corpus_fingerprint: str = ""
 
     # -- question context ----------------------------------------------------
     category: str = ""

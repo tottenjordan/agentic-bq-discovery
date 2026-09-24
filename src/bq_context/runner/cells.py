@@ -145,6 +145,7 @@ class AdkCellExecutor:
             run_idx=run_idx,
             status="error",
             code_version=self.spec.code_version,
+            corpus_fingerprint=self.spec.corpus_fingerprint,
             category=str(question.get("category", "")),
             question=str(question.get("question", "")),
             relevance=dict(relevance),

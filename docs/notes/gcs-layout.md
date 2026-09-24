@@ -1,0 +1,95 @@
+# The GCS layout, and why it is shaped this way
+
+One bucket holds three different kinds of thing with three different lifetimes,
+and the rules below are what keeps them from destroying each other. The tree is
+the easy part; the reasoning is what someone reproducing this on their own data
+actually needs.
+
+```
+gs://{bucket}/
+├── corpus/
+│   ├── provisioned/{resource_prefix}.json   what `ensure-infra` built, and when
+│   └── {fingerprint}/
+│       ├── manifest.json                    what the corpus *is*
+│       └── ladder.json                      what `preflight` measured about it
+│
+├── experiments/{experiment_id}/
+│   ├── experiment.json        the corpus this id was FIRST run against
+│   ├── shards/{tier}__{approach}/           STABLE — resume and merge read this
+│   │   ├── attempt-NNNN.jsonl
+│   │   ├── summary-NNNN.json
+│   │   └── _SUCCESS | _FAILED
+│   ├── merged/                              STABLE — deterministic, regenerated
+│   │   ├── results.jsonl
+│   │   └── missing.json
+│   └── runs/{run_id}/                       one execution, never overwritten
+│       ├── manifest.json      commit, corpus, config, completeness counts
+│       ├── preflight.json     what preflight measured on this run
+│       ├── scoring/report.md
+│       ├── scoring/executive.html
+│       └── plots/*.png
+│
+├── pipeline_root/             KFP's; do not touch
+└── _scratch/validate_config   the writability probe
+```
+
+## The four rules
+
+**A path resume depends on may not be versioned.** `resume.shard_prefix` and
+`merge` both build the shard path from `experiment_id` alone. Version it — by
+run, by date, by anything — and a resumed run cannot find the previous one's
+work, which is the whole reliability story here. `merged/` is stable for a
+different reason: it is a pure function of the shards, so a second copy is
+4.8 MB that can only ever disagree with the first.
+
+**A path nothing depends on should be versioned.** Report, executive HTML,
+figures and the manifest are ~420 KB per execution and are what a human reads.
+Keying them on `experiment_id` meant every execution overwrote the last.
+`hard-full-01` ran three times — the original, a cache-hit no-op, and the
+`--no-cache` recovery — and kept one report. The failed run's report was the
+evidence for the shard exit-code bug, and it is gone.
+
+**`run_id` is minted once, at submission.** It is a pipeline parameter for the
+same reason `experiment_id` is. Generated inside the pipeline instead, each task
+would mint its own and a single run's artifacts would land in as many folders as
+there are tasks that write one. Format is `{UTC timestamp}-{short SHA}`:
+timestamp first so a bucket listing is chronological, SHA second so a folder says
+what produced it without opening anything. Not the Vertex job id — a local run
+has none — but the job id is in the manifest.
+
+**The corpus is keyed by fingerprint, not by resource prefix.** A prefix is
+reused as enrichment changes, so a record under it is overwritten by the next
+provisioning; fingerprints accumulate. It is also the identifier already on every
+cell and in the BigQuery sink, so `corpus/{fingerprint}/` is where a reader lands
+after a `GROUP BY corpus_fingerprint`.
+
+## Two things that follow from the exit task's guarantee
+
+`finalize` is an `ExitHandler` exit task: its value is that it runs when
+something upstream died. Two consequences show up in this layout.
+
+It **cannot take preflight's fingerprint as a task output** — that would make it
+depend on a task allowed to fail. So `preflight` writes
+`runs/{run_id}/preflight.json` and `finalize` reads it back, degrading to an
+empty record if it is absent. Same bargain `merge_report` already makes for
+`missing.json`.
+
+It **writes the manifest before the completeness check**, so a red run gets one.
+A failed run is exactly when someone needs to know what it was running.
+
+## What is deliberately not here
+
+- **No migration.** Experiments from before this change keep their old shape:
+  `full-01` and `hard-full-01` have `scoring/` and `plots/` directly under the
+  experiment prefix. `merge` and `score` still read them, because nothing about
+  the stable paths moved.
+- **`pipeline_root/` stays where it is.** It is KFP's, `submit-pipeline` passes
+  it, and moving it would orphan every existing job's artifacts.
+- **No lifecycle policy on `runs/`.** 420 KB per execution is not yet a problem.
+  Worth revisiting if someone runs the factorial daily.
+
+## Related
+
+- [The Vertex AI Pipeline](kfp-pipeline.md) — the topology these paths serve.
+- [Provisioning the four-tier corpus](gcp/corpus-provisioning.md) — what
+  `ensure-infra` creates, which is what `corpus/` now records.

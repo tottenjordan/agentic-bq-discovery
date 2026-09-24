@@ -795,7 +795,11 @@ def validate_config(
 
     try:
         store = store_for(out, credentials)
-        store.write_text("_validate_config", "ok\n")
+        # Under `_scratch/`, not at the bucket root. The root holds four things
+        # a reader needs to recognise — corpus, experiments, pipeline_root and
+        # this — and a three-byte probe sitting among them reads like one of
+        # them. Overwritten on every run; nothing reads it back.
+        store.write_text("_scratch/validate_config", "ok\n")
         typer.echo(f"storage            writable ({store.uri('')})")
     except Exception as exc:  # noqa: BLE001
         problems.append(f"Storage not writable at {out}: {type(exc).__name__}: {exc}")

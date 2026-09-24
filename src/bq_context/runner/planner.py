@@ -25,6 +25,11 @@ sweep finishes no sooner than whenever ``bq_tools`` happens to start.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 #: Measured seconds per cell, from the full-01 run's 3,000 cells (2026-09-22).
 #: Used only for ordering, so it needs to be roughly right, not exact — but it
 #: is real data rather than a guess, and re-measuring is one query against
@@ -76,6 +81,55 @@ def corpus_fingerprint(ladder: list[dict]) -> str:
     ]
     # sha256, not hash(): the builtin is salted per process, so it would differ
     # between the preflight task and anything comparing against it.
+    digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode())
+    return digest.hexdigest()[:16]
+
+
+def questions_fingerprint(questions: Mapping[str, Mapping[str, Any]]) -> str:
+    """Short, stable hash of the question set's *meaning*.
+
+    The same job ``corpus_fingerprint`` does, one layer up. ``code_version``
+    describes the questions only for as long as they are baked into the image;
+    once ``--questions`` can point somewhere else, swapping the file and
+    resubmitting under the same commit would return cells scored against the old
+    questions — green, plausible, wrong.
+
+    **Order is content here, which is the asymmetry with ``corpus_fingerprint``.**
+    That one sorts its ladder, because tier order is presentation. This one must
+    not: ``--limit`` takes a deterministic prefix (``list(questions)[:limit]``),
+    so reordering the file changes which questions a smoke or pilot run measures
+    without editing a single character of any question.
+
+    Order *within* a relevance list carries nothing, so those are sorted. A
+    fingerprint that moved when someone reshuffled a ``must_have`` would turn
+    every resume into a full resweep, which is the failure mode
+    ``corpus_fingerprint``'s exclusions exist to avoid.
+
+    ``distractor`` is hashed alongside the other two. The trap questions exist to
+    catch a retriever that takes the bait, so swapping a distractor is a
+    different experiment even though no expected answer changed.
+
+    Missing fields are tolerated rather than rejected. A hand-written set with no
+    ``relevance`` is a question with no expected answer, which ``preflight``
+    should refuse — but a hasher is the wrong place to raise.
+    """
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    canonical = [
+        [
+            qid,
+            str(q.get("category", "")),
+            str(q.get("question", "")),
+            *(
+                sorted(str(t) for t in (q.get("relevance") or {}).get(field, []))
+                for field in ("must_have", "nice_to_have", "distractor")
+            ),
+        ]
+        for qid, q in questions.items()
+    ]
+    # sha256, not hash(): the builtin is salted per process, so the submitting
+    # CLI and the shard re-checking it would disagree every time.
     digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode())
     return digest.hexdigest()[:16]
 

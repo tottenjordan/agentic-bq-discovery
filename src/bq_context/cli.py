@@ -1356,6 +1356,7 @@ def run_shard(
         experiment_id,
         corpus_fingerprint=spec.corpus_fingerprint,
         code_version=spec.code_version,
+        questions_fingerprint=questions_fingerprint,
     ):
         typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)
 

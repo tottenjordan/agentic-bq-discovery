@@ -350,3 +350,57 @@ def test_a_torn_record_does_not_stop_the_shard(tmp_path: Path) -> None:
     store = LocalStore(tmp_path)
     store.write_text("experiments/exp/experiment.json", "{not json")
     assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []
+
+
+def test_a_changed_question_set_warns_too(tmp_path: Path) -> None:
+    """Same hazard as a changed corpus, arriving by a different door: resume
+    appends cells for different questions to one experiment's shards."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", questions_fingerprint="q1"
+    )
+    warnings = note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", questions_fingerprint="q2"
+    )
+
+    assert len(warnings) == 1
+    assert "q1" in warnings[0]
+    assert "q2" in warnings[0]
+
+
+def test_both_identities_can_change_at_once(tmp_path: Path) -> None:
+    """Two warnings, not one merged sentence. They have different causes and
+    different fixes, and a reader needs to know it is both."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", questions_fingerprint="q1"
+    )
+    warnings = note_experiment_identity(
+        store, "exp", corpus_fingerprint="bbb", code_version="v1", questions_fingerprint="q2"
+    )
+    assert len(warnings) == 2
+
+
+def test_an_experiment_recorded_before_questions_were_tracked_still_reads(tmp_path: Path) -> None:
+    """`full-01`'s record predates the field. An absent value means unknown, so
+    it must stay quiet rather than warn on every shard of a resumed sweep."""
+    store = LocalStore(tmp_path)
+    store.write_text(
+        "experiments/exp/experiment.json",
+        json.dumps({"experiment_id": "exp", "corpus_fingerprint": "aaa", "code_version": "v1"}),
+    )
+    assert (
+        note_experiment_identity(
+            store, "exp", corpus_fingerprint="aaa", code_version="v1", questions_fingerprint="q9"
+        )
+        == []
+    )
+
+
+def test_the_question_fingerprint_is_recorded_on_a_first_run(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", questions_fingerprint="q1"
+    )
+    record = json.loads(store.read_text("experiments/exp/experiment.json"))
+    assert record["questions_fingerprint"] == "q1"

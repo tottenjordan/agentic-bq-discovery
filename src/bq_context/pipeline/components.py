@@ -543,6 +543,7 @@ def finalize(
         publish_summary,
         run_manifest,
         run_preflight,
+        run_questions,
     )
     from bq_context.runner.resume import experiment_prefix
 
@@ -579,6 +580,7 @@ def finalize(
         question_limit=question_limit,
         report=report_json,
         corpus=run_preflight(store, experiment_id, run_id),
+        questions=run_questions(store, experiment_id),
         # Not os.environ directly: CORPUS_PROFILE is absent from .env, so it is
         # never forwarded and the container falls back to setup.py's default.
         # The first live manifest said corpus_profile "" for a run that measured

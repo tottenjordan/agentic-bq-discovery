@@ -111,7 +111,12 @@ def experiment_record_path(experiment_id: str) -> str:
 
 
 def note_experiment_identity(
-    store: ArtifactStore, experiment_id: str, *, corpus_fingerprint: str, code_version: str
+    store: ArtifactStore,
+    experiment_id: str,
+    *,
+    corpus_fingerprint: str,
+    code_version: str,
+    questions_fingerprint: str = "",
 ) -> list[str]:
     """Record what this experiment was first run against; warn if it has changed.
 
@@ -127,6 +132,12 @@ def note_experiment_identity(
     reasonable thing to do, and ``finalize`` is the only task allowed to turn a
     run red. It fires once per shard, so 24 times on a full sweep; that is the
     price of checking somewhere a standalone ``run-shard`` also reaches.
+
+    The question set is the same hazard arriving by a different door, and is
+    warned about the same way. It is *also* checked much more strictly, and
+    earlier, by ``run-shard``'s fingerprint comparison against the snapshot —
+    this one exists for the case a shard is run by hand with no expected value,
+    where a warning is all that is available.
 
     A changed ``code_version`` is recorded but never warned about: a new commit
     is what invalidates the shard cache, so every resubmit after an edit has one.
@@ -148,6 +159,7 @@ def note_experiment_identity(
                     {
                         "experiment_id": experiment_id,
                         "corpus_fingerprint": corpus_fingerprint,
+                        "questions_fingerprint": questions_fingerprint,
                         "code_version": code_version,
                         "first_run_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     },
@@ -160,18 +172,24 @@ def note_experiment_identity(
             logger.warning("Could not record the identity of %s", experiment_id)
         return []
 
-    # An empty fingerprint is "not known" — a local run-shard without
-    # --corpus-fingerprint — not a different corpus. Comparing it would warn on
-    # every ad-hoc run and say nothing true.
-    was = previous.get("corpus_fingerprint", "")
-    if not corpus_fingerprint or not was or corpus_fingerprint == was:
-        return []
-    warning = (
-        f"{experiment_id} was first run against corpus {was} and is now "
-        f"{corpus_fingerprint}. Resuming will mix two corpora in one results "
-        f"file. Use a new --experiment-id, or delete the existing shards."
-    )
-    return [warning]
+    # One warning per changed identity, not one merged sentence: they have
+    # different causes and different fixes, and a reader needs to know it is
+    # both. An empty fingerprint on either side is "not known" — a local
+    # run-shard, or a record written before the field existed — not a change.
+    # Comparing those would warn on every ad-hoc run and say nothing true.
+    warnings = []
+    for label, now, was in (
+        ("corpus", corpus_fingerprint, previous.get("corpus_fingerprint", "")),
+        ("question set", questions_fingerprint, previous.get("questions_fingerprint", "")),
+    ):
+        if not now or not was or now == was:
+            continue
+        warnings.append(
+            f"{experiment_id} was first run against {label} {was} and is now {now}. "
+            f"Resuming will mix two in one results file. Use a new "
+            f"--experiment-id, or delete the existing shards."
+        )
+    return warnings
 
 
 def latest_attempt_number(store: ArtifactStore, spec: ShardSpec) -> int:

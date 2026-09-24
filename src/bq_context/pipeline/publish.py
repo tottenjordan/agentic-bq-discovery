@@ -126,6 +126,26 @@ def effective_env(environ: Mapping[str, str]) -> dict[str, str]:
     return resolved
 
 
+def run_questions(store: ArtifactStore, experiment_id: str) -> dict[str, Any]:
+    """The question set this sweep ran, as the manifest wants it. Never raises.
+
+    Read back from the snapshot rather than taken as a pipeline parameter, for
+    the same reason the corpus fingerprint is: ``finalize`` is an exit task and
+    must not depend on anything that is allowed to fail. An old experiment with
+    no snapshot reports zeroes, which is true of it.
+    """
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+
+    try:
+        raw = json.loads(store.read_text(f"{experiment_prefix(experiment_id)}/questions.json"))
+        items = raw["questions"] if isinstance(raw, dict) else raw
+        loaded = {str(q["id"]): q for q in items}
+    except Exception:  # noqa: BLE001 - a missing snapshot must not lose the manifest
+        logger.warning("No question snapshot for %s; recording it as unknown", experiment_id)
+        return {"fingerprint": "", "count": 0}
+    return {"fingerprint": questions_fingerprint(loaded), "count": len(loaded)}
+
+
 def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
     # them into a dataclass would add a type used at one call site and hide none
     # of the coupling.
@@ -140,6 +160,7 @@ def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
     question_limit: int,
     report: Mapping[str, Any],
     corpus: Mapping[str, Any],
+    questions: Mapping[str, Any],
     environ: Mapping[str, str],
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -158,6 +179,8 @@ def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
         "code_version": code_version,
         "pipeline_job": pipeline_job,
         "corpus_fingerprint": corpus.get("fingerprint", ""),
+        "questions_fingerprint": questions.get("fingerprint", ""),
+        "question_count": questions.get("count", 0),
         "resource_prefix": environ.get("RESOURCE_PREFIX", ""),
         "corpus_profile": environ.get("CORPUS_PROFILE", ""),
         "agent_model": environ.get("AGENT_MODEL", ""),

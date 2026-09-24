@@ -167,6 +167,7 @@ re-running after repairing a corpus is legitimate. Heed it: use a new
 gs://{bucket}/
 ├── corpus/{fingerprint}/      what the corpus is, and what preflight measured
 └── experiments/{id}/
+    ├── questions.json         the set this sweep ran, snapshotted at submission
     ├── shards/ merged/        stable paths; this is what resume reads
     └── runs/{timestamp}-{sha}/
         ├── manifest.json      the commit, corpus and config behind this run
@@ -177,6 +178,72 @@ Each *execution* gets its own `runs/` folder, so re-running an experiment id no
 longer overwrites the previous run's report. The shard and merged paths stay put,
 which is what makes resume work. Full reasoning in
 [docs/notes/gcs-layout.md](../docs/notes/gcs-layout.md).
+
+## Bring your own questions
+
+The 25 shipped questions are the default, not a fixture. Point `--questions` at
+your own file and nothing needs rebuilding:
+
+```bash
+# Check it before spending anything: preflight refuses a set that names tables
+# the corpus does not have, and suggests the near-miss when there is one.
+uv run bq-context preflight --tier 3 --questions ./my-questions.json
+
+uv run bq-context submit-pipeline --profile smoke -e byoq-01 \
+    --questions ./my-questions.json
+```
+
+`--questions` works on the local commands too (`run-shard`, `merge`,
+`plan-shards`), and accepts a `gs://` URI as well as a path.
+
+### The format
+
+A list, or `{"questions": [...]}`. Both parse.
+
+```json
+{
+  "id": "single-q1",
+  "category": "single-table",
+  "question": "What are the busiest bike share stations in Austin by month?",
+  "relevance": {
+    "must_have":    ["austin_bikeshare_trips"],
+    "nice_to_have": ["austin_bikeshare_stations"],
+    "distractor":   ["citibike_stations"]
+  }
+}
+```
+
+Every name in all three lists must be a view in the provisioned corpus —
+preflight checks this, including `distractor`, because one that does not exist
+is not a distractor but a typo that silently disarms the question.
+
+**Order matters.** `--limit N` takes the first N, not a sample, so the smoke and
+pilot profiles measure whatever sits at the top of your file.
+
+### The four categories, and why the mix matters
+
+| Category | What it isolates |
+|---|---|
+| `single-table` | Can retrieval find one obvious table? Everything scores near 1.0 here; it is the floor, not the signal. |
+| `multi-table-related` | Tables in the same domain — does it find *all* of them, or stop at the first? |
+| `multi-table-disparate` | Tables with no lexical overlap. Where semantic approaches earn their cost. |
+| `trap` | A distractor that a keyword match would take. The only category where a wrong answer is the measurement. |
+
+A set that is all `single-table` will report every approach as equivalent,
+because on easy questions they are. See
+[GROUND_TRUTH.md](./GROUND_TRUTH.md) for how the shipped distractors are baited,
+and [docs/notes/hard-corpus-results.md](../docs/notes/hard-corpus-results.md)
+for what happened when we made the corpus harder.
+
+### How a swapped set stays honest
+
+Submission fingerprints the set, snapshots it to
+`experiments/{id}/questions.json`, and sends the fingerprint as a pipeline
+parameter. That fingerprint is a shard cache-key input alongside `code_version`
+and `corpus_fingerprint`, so editing a question and resubmitting at the same
+commit **re-runs** the cells rather than returning the old ones. Each shard
+re-checks the snapshot on arrival and refuses to run if it has changed
+underneath the sweep.
 
 ## Reading the report
 

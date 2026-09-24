@@ -18,7 +18,10 @@ from bq_context.pipeline.publish import (
     merge_args,
     merge_report,
     publish_figures,
+    publish_manifest,
     publish_report,
+    run_manifest,
+    run_preflight,
 )
 from bq_context.runner.store import LocalStore
 from bq_context.scoring.merge import missing_path
@@ -115,6 +118,107 @@ def test_the_merged_results_stay_off_the_run_folder() -> None:
 
     assert not run_prefix("exp", RUN).startswith(f"{experiment_prefix('exp')}/merged")
     assert experiment_prefix("exp") == "experiments/exp"
+
+
+# ---------------------------------------------------------------------------
+# The run manifest
+#
+# A run folder full of PNGs says nothing about what produced them. The manifest
+# is what makes one self-describing: the commit, the corpus, the configuration
+# and the completeness counts, in the same folder as the output they explain.
+# ---------------------------------------------------------------------------
+def _manifest(**overrides: object) -> dict:
+    kwargs: dict = {
+        "experiment_id": "hard-full-01",
+        "run_id": RUN,
+        "code_version": "abc1234",
+        "pipeline_job": "projects/p/locations/l/pipelineJobs/j",
+        "runs": 5,
+        "tiers": [0, 1, 2, 3],
+        "approaches": ["kc_context"],
+        "question_limit": 0,
+        "report": {"expected": 3000, "present": 3000, "missing_count": 0, "missing": []},
+        "corpus": {"fingerprint": "13f9fcb4", "ladder": []},
+        "environ": {"RESOURCE_PREFIX": "bigquery_context_hard", "CORPUS_PROFILE": "hard"},
+    }
+    kwargs.update(overrides)
+    return run_manifest(**kwargs)  # ty: ignore[missing-argument]
+
+
+def test_the_manifest_records_what_produced_the_run() -> None:
+    manifest = _manifest()
+    assert manifest["code_version"] == "abc1234"
+    assert manifest["corpus_fingerprint"] == "13f9fcb4"
+    assert manifest["resource_prefix"] == "bigquery_context_hard"
+    assert manifest["corpus_profile"] == "hard"
+    assert manifest["pipeline_job"].endswith("/pipelineJobs/j")
+
+
+def test_the_manifest_records_completeness() -> None:
+    """Straight from the merge report, not recounted — two counts that can
+    disagree are worse than one."""
+    manifest = _manifest()
+    assert (manifest["expected"], manifest["present"], manifest["missing_count"]) == (3000, 3000, 0)
+
+
+def test_the_manifest_never_carries_the_missing_cell_list() -> None:
+    """`missing.json` already holds it, and on a badly broken run it is 3,000
+    strings — enough to make the manifest the largest file in the folder."""
+    assert "missing" not in _manifest()
+
+
+def test_a_run_with_missing_cells_still_gets_a_manifest() -> None:
+    """A failed run is exactly when someone needs to know what it was running."""
+    manifest = _manifest(report={"expected": 3000, "present": 12, "missing_count": 2988})
+    assert manifest["present"] == 12
+    assert manifest["missing_count"] == 2988
+
+
+def test_an_unconfigured_environment_leaves_the_fields_empty_not_absent() -> None:
+    """A reader comparing two manifests must not have to distinguish "not set"
+    from "this version did not record it"."""
+    manifest = _manifest(environ={})
+    assert manifest["resource_prefix"] == ""
+    assert manifest["corpus_profile"] == ""
+
+
+def test_the_manifest_lands_beside_the_report_it_explains(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path / "store")
+    target = publish_manifest(store, "exp", RUN, {"run_id": RUN})
+    assert target == f"experiments/exp/runs/{RUN}/manifest.json"
+    assert json.loads(store.read_text(target))["run_id"] == RUN
+
+
+def test_the_manifest_round_trips(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path / "store")
+    original = _manifest()
+    target = publish_manifest(store, "hard-full-01", RUN, original)
+    assert json.loads(store.read_text(target)) == original
+
+
+# ---------------------------------------------------------------------------
+# What preflight saw, read back by the exit task
+# ---------------------------------------------------------------------------
+def test_the_preflight_record_is_read_back(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text(
+        f"experiments/exp/runs/{RUN}/preflight.json",
+        json.dumps({"fingerprint": "13f9fcb4", "ladder": [{"tier": 3}]}),
+    )
+    assert run_preflight(store, "exp", RUN)["fingerprint"] == "13f9fcb4"
+
+
+def test_no_preflight_record_is_not_fatal(tmp_path: Path) -> None:
+    """Read from storage rather than taken as a task output, precisely so the
+    exit task keeps no dependency on a task that may have died. The cost is that
+    it can be absent, and an absent fingerprint must not lose the manifest."""
+    assert run_preflight(LocalStore(tmp_path), "exp", RUN) == {"fingerprint": "", "ladder": []}
+
+
+def test_a_corrupt_preflight_record_is_not_fatal(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text(f"experiments/exp/runs/{RUN}/preflight.json", "{not json")
+    assert run_preflight(store, "exp", RUN)["fingerprint"] == ""
 
 
 # ---------------------------------------------------------------------------

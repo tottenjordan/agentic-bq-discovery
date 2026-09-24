@@ -312,10 +312,16 @@ def test_profiles_do_not_set_parallelism() -> None:
 
 
 def test_preflight_component_takes_no_service_account(spec: dict[str, Any]) -> None:
-    """It runs as the SA already; that is precisely what makes the gate real."""
+    """It runs as the SA already; that is precisely what makes the gate real.
+
+    The exhaustive comparison is the point: it is what stops an identity
+    parameter arriving under another name. `out`, `experiment_id` and `run_id`
+    are here only so preflight can leave its fingerprint where the exit task
+    reads it — none of them says who the task runs as.
+    """
     params = _tasks(spec)["preflight"]["inputs"]["parameters"]
     assert "service_account" not in params
-    assert set(params) == {"project", "tier", "baseline"}
+    assert set(params) == {"project", "tier", "baseline", "out", "experiment_id", "run_id"}
 
 
 # ---------------------------------------------------------------------------

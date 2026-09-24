@@ -74,11 +74,38 @@ noise, not a trend. **On this evidence Dataplex catalog enrichment does not
 measurably improve table discovery over a well-described BigQuery estate** —
 upstream's published null result, reproduced on a harder corpus.
 
+## Confirmed at five runs — `hard-full-01`, 3,000/3,000 cells
+
+`survey` is one run and cannot separate a difference from noise. `full` can, and
+it tightens rather than overturns:
+
+| Approach | Discovery | Final | Rerank loss | Δ mean (t0→t3) |
+|---|---|---|---|---|
+| 1 · BQ Tools *(control)* | 100.0% | 99.7% | +0.003 | −0.004 |
+| 2 · KC Search | 96.7% | 94.5% | +0.022 | −0.004 |
+| 3 · KC Context | 100.0% | **93.6%** | **+0.064** | +0.005 |
+| 4 · Pre-Filter | 100.0% | 97.8% | +0.022 | −0.035 |
+| 5 · Semantic | 96.7% | 93.7% | +0.030 | −0.009 |
+| 6 · Search Direct *(control)* | 96.7% | 96.7% | +0.000 | +0.000 |
+
+**Both findings survive averaging.** `kc_context`'s rerank loss moves 0.063 →
+**0.064** across five runs — it is a property of the approach, not a fluke. And
+the tier deltas *shrink*: the survey's ±0.020 scatter collapses to −0.009…+0.005
+for five of six approaches. Averaging noise moves it toward zero, which is what
+noise does.
+
+Pre-Filter's −0.035 is the one figure that did not shrink, and it is negative:
+tier 3 is slightly *worse* than tier 0 for that approach. With every other Δ
+inside ±0.01 the honest reading is variance, not a real regression.
+
+**The conclusion is therefore not "we could not detect an effect with one run".
+It is that there is no effect to detect at this corpus size, with five runs of
+evidence.**
+
 ## Read these caveats before quoting any of it
 
-- **One run.** `survey` does not average per-cell variance. A ±0.02 mean delta on
-  25 questions is inside what a second run could move. `full` (3,000 cells) is
-  what gives an interval.
+- **Five runs, one corpus, one project.** `full` averages per-cell variance but
+  changes nothing else: same 24 tables, same 25 questions, same estate.
 - **Traps are saturated at 1.000 on every rung.** All four name Austin, and
   descriptions settle them. The nine tables kept cannot pressure them.
 - **Still only 24 tables.** Real discovery is hundreds.

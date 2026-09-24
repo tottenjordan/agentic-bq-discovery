@@ -1083,3 +1083,41 @@ def test_the_mismatch_message_names_both_fingerprints(
     err = capsys.readouterr().err
     assert "0123456789abcdef" in err
     assert "gs://b/q.json" in err
+
+
+def test_a_gs_uri_survives_the_command_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE regression, and the reason the unit tests above did not catch it.
+
+    `QuestionsOpt` was typed `Path`, so Typer coerced the URI before
+    `_load_questions` ever saw it — and `PurePath` collapses `gs://bucket/x` to
+    `gs:/bucket/x`. The gs:// branch then never fired, the local branch looked
+    for a file named `gs:/...`, and every shard exited 2.
+
+    The unit tests passed a `str` directly and so bypassed the coercion
+    entirely. This one goes through the parser, which is where the bug lived.
+    """
+    seen: list[str] = []
+    store = LocalStore(tmp_path)
+    store.write_text("questions.json", json.dumps({"questions": [QUESTION]}))
+
+    def _store(location: str) -> LocalStore:
+        seen.append(location)
+        return store
+
+    monkeypatch.setattr(cli, "store_for", _store)
+    monkeypatch.setattr(cli, "_load_questions", cli._load_questions)
+
+    @cli.app.command("probe-questions")
+    def _probe(questions_file: cli.QuestionsOpt = cli.DEFAULT_QUESTIONS) -> None:
+        typer.echo(",".join(cli._load_questions(questions_file)))
+
+    result = runner.invoke(
+        cli.app,
+        ["probe-questions", "--questions", "gs://bucket/experiments/e/questions.json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "q1" in result.output
+    assert seen == ["gs://bucket/experiments/e"], f"the scheme was mangled: {seen}"

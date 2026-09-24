@@ -47,7 +47,10 @@ app = typer.Typer(
     add_completion=False,
 )
 
-DEFAULT_QUESTIONS = Path("experiments/questions.json")
+#: A str, not a Path. `--questions` also accepts a gs:// URI, and PurePath
+#: collapses the double slash in a scheme -- "gs://b/x" becomes "gs:/b/x" --
+#: which silently routed every pipeline shard down the local-file branch.
+DEFAULT_QUESTIONS = "experiments/questions.json"
 
 #: Empty means "work it out at parse time". These were literals naming the
 #: project this was developed against, which is unreachable for anyone else —
@@ -170,7 +173,14 @@ BaselineOpt = Annotated[
     int,
     typer.Option("--baseline", min=0, max=3, help="Tier to compare enrichment against."),
 ]
-QuestionsOpt = Annotated[Path, typer.Option("--questions", help="Path to questions.json.")]
+QuestionsOpt = Annotated[
+    str,
+    typer.Option(
+        "--questions",
+        help="Path or gs:// URI to a questions file. Must be str, not Path: see "
+        "DEFAULT_QUESTIONS for why.",
+    ),
+]
 
 
 @app.callback()

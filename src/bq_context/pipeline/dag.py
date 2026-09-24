@@ -95,6 +95,7 @@ def bq_context_pipeline(
     experiment_id: str = "pilot-01",
     code_version: str = "unknown",
     run_id: str = "",
+    questions_fingerprint: str = "",
     service_account: str = "",
     runs: int = 5,
     question_limit: int = 0,
@@ -207,6 +208,11 @@ def bq_context_pipeline(
                 # Corpus shape as a cache-key input. code_version alone lets a
                 # changed corpus return cells scored against the old one.
                 corpus_fingerprint=check.outputs["fingerprint"],
+                # The third identity input, with the same job as the other two:
+                # swap the question set and resubmit at the same commit against
+                # the same corpus, and without this KFP returns cells scored
+                # against the questions that are no longer being asked.
+                questions_fingerprint=questions_fingerprint,
                 question_limit=question_limit,
             )
             _apply_config_env(cell)
@@ -221,8 +227,9 @@ def bq_context_pipeline(
                 backoff_factor=2.0,
                 backoff_max_duration="600s",
             )
-            # Cacheable, and safe *only* because both code_version and
-            # corpus_fingerprint are explicit inputs. Drop either and a rerun
-            # silently returns cells produced by different code, or scored
-            # against a different corpus.
+            # Cacheable, and safe *only* because code_version,
+            # corpus_fingerprint and questions_fingerprint are all explicit
+            # inputs. Drop any one and a rerun silently returns cells produced
+            # by different code, scored against a different corpus, or answering
+            # questions nobody is asking any more.
             cell.set_caching_options(enable_caching=True)

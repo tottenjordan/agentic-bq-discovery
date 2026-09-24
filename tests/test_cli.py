@@ -1039,3 +1039,47 @@ def test_preflight_passes_a_question_set_that_fits(
     assert result.exit_code == 0, result.output
     assert "questions: 1 loaded" in result.output
     assert "fingerprint=" in result.output
+
+
+# ---------------------------------------------------------------------------
+# A shard runs the questions it was sent for, or it does not run
+#
+# `submit-pipeline` fingerprints the set and snapshots it, but a snapshot is
+# still an object someone can overwrite while 24 shards sit in the queue behind
+# it. This closes that window.
+# ---------------------------------------------------------------------------
+def test_a_matching_question_set_is_accepted() -> None:
+    from bq_context.runner.planner import questions_fingerprint
+
+    questions = {"q1": _question("q1", must_have=["t"])}
+    cli._require_expected_questions(questions, questions_fingerprint(questions), "src")
+
+
+def test_a_changed_question_set_stops_the_shard() -> None:
+    """An abort, not a warning — unlike the corpus check. A changed corpus still
+    produces cells for the *same* questions, which stay comparable. A changed
+    question set produces cells for different questions under one experiment id,
+    which merge then reads as both missing and unexpected."""
+    questions = {"q1": _question("q1", must_have=["t"])}
+    with pytest.raises(typer.Exit) as exc:
+        cli._require_expected_questions(questions, "0123456789abcdef", "gs://b/q.json")
+    assert exc.value.exit_code == 1
+
+
+def test_an_unchecked_question_set_runs() -> None:
+    """Empty means "nothing to compare against" — a local `run-shard` — the same
+    convention `corpus_fingerprint` uses in `note_experiment_identity`."""
+    cli._require_expected_questions({"q1": _question("q1", must_have=["t"])}, "", "src")
+
+
+def test_the_mismatch_message_names_both_fingerprints(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Whoever reads this is deciding whether their edit or someone else's is
+    the surprise, and they cannot do that from one number."""
+    questions = {"q1": _question("q1", must_have=["t"])}
+    with contextlib.suppress(typer.Exit):
+        cli._require_expected_questions(questions, "0123456789abcdef", "gs://b/q.json")
+    err = capsys.readouterr().err
+    assert "0123456789abcdef" in err
+    assert "gs://b/q.json" in err

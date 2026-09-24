@@ -21,6 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from bq_context import cli
+from bq_context.runner.store import LocalStore
 
 runner = CliRunner()
 SRC = Path("src/bq_context")
@@ -224,12 +225,17 @@ def test_an_explicit_image_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cli.default_image("abc1234") == "elsewhere/runner:pinned"
 
 
-def test_submitting_no_longer_demands_an_image(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_submitting_no_longer_demands_an_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The regression this closes: a fresh checkout could not submit at all
     without first running `make image-ref`."""
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "acme")
     monkeypatch.delenv("BQ_CONTEXT_IMAGE", raising=False)
     monkeypatch.setattr(cli, "ensure_image", lambda *_: None)
+    # `submit-pipeline` now snapshots the question set to the bucket before
+    # compiling; conftest pins a fake project, so a real store 404s here.
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: LocalStore(tmp_path))
     result = runner.invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
     assert result.exit_code == 0, result.output
     # The exact line, not a substring of the output: `build_config` carries the

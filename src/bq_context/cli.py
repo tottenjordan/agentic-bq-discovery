@@ -492,6 +492,67 @@ def assess_questions(
     return problems
 
 
+def _require_expected_questions(
+    questions: Mapping[str, Mapping[str, Any]], expected: str, source: str | Path
+) -> None:
+    """Refuse to run if the question set is not the one this shard was sent for.
+
+    Closes the window between submission and execution. ``submit-pipeline``
+    fingerprints the set and snapshots it, but a snapshot is still an object
+    someone can overwrite while 24 shards are queued behind it.
+
+    An abort, not a warning — deliberately unlike the corpus check in
+    ``note_experiment_identity``. A changed corpus still produces cells for the
+    *same* questions, which remain comparable. A changed question set produces
+    cells for different questions under one experiment id, which merge then
+    reads as simultaneously missing and unexpected.
+
+    An empty ``expected`` means unchecked, the same convention
+    ``corpus_fingerprint`` uses: a local ``run-shard`` has nothing to compare to.
+    """
+    if not expected:
+        return
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+
+    found = questions_fingerprint(questions)
+    if found == expected:
+        return
+    typer.secho(
+        f"The question set at {source} has changed since submission "
+        f"(expected {expected}, found {found}). Refusing to mix two question "
+        f"sets in one results file.",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _snapshot_questions(out: str, experiment_id: str, source: str | Path) -> str:
+    """Copy the question set into the experiment prefix and return its fingerprint.
+
+    The copy is the point. Shards read the snapshot rather than the submitter's
+    filesystem, which means the set cannot change under a running sweep, and it
+    is archived with the results it produced — the same move
+    ``corpus/{fingerprint}/`` makes for the corpus.
+
+    Not best effort, unlike the corpus and provisioning records. Those are
+    diagnostics; this is an input every shard depends on, so failing to write it
+    must stop the submission rather than produce 24 shards that cannot find
+    their questions.
+    """
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+    from bq_context.runner.resume import experiment_prefix  # noqa: PLC0415
+
+    questions = _load_questions(source)
+    fingerprint = questions_fingerprint(questions)
+    store = store_for(out)
+    target = f"{experiment_prefix(experiment_id)}/questions.json"
+    store.write_text(target, json.dumps({"questions": list(questions.values())}, indent=2) + "\n")
+    typer.echo(f"questions {len(questions)} from {source}  fingerprint={fingerprint}")
+    typer.echo(f"snapshot  {store.uri(target)}")
+    return fingerprint
+
+
 def _assess_question_set(source: str | Path) -> list[str]:
     """Load the question set, report it, and judge it against the corpus.
 
@@ -1243,6 +1304,14 @@ def run_shard(
             "change invalidates the KFP shard cache.",
         ),
     ] = "",
+    questions_fingerprint: Annotated[
+        str,
+        typer.Option(
+            "--questions-fingerprint",
+            help="The question set this shard was submitted against. The shard "
+            "refuses to run if what it loads does not match. Empty means unchecked.",
+        ),
+    ] = "",
 ) -> None:
     """Run every cell for one (tier, approach) pair. Resumable."""
     config = _config()
@@ -1255,6 +1324,7 @@ def run_shard(
         raise typer.Exit(2)
 
     questions = _load_questions(questions_file)
+    _require_expected_questions(questions, questions_fingerprint, questions_file)
     chosen = [q.strip() for q in question_ids.split(",") if q.strip()] or list(questions)
     if limit:
         # Deterministic prefix, not a sample: the smoke and pilot profiles must
@@ -1703,6 +1773,7 @@ def submit_pipeline_cmd(
             "override with BQ_CONTEXT_SERVICE_ACCOUNT.",
         ),
     ] = DEFAULT_SA,
+    questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     skip_infra: Annotated[bool, typer.Option("--skip-infra")] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Compile and print, do not submit.")
@@ -1768,6 +1839,7 @@ def submit_pipeline_cmd(
     from bq_context.runner.resume import new_run_id  # noqa: PLC0415
 
     run_id = new_run_id(sha)
+    questions_fp = _snapshot_questions(out, experiment_id, questions_file)
 
     params = {
         "project": config.project,
@@ -1775,6 +1847,7 @@ def submit_pipeline_cmd(
         "run_id": run_id,
         "out": out,
         "code_version": sha,
+        "questions_fingerprint": questions_fp,
         "service_account": service_account,
         "skip_infra": skip_infra,
         "refresh_figures": refresh_figures,

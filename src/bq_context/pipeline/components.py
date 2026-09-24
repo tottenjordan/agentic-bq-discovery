@@ -354,6 +354,7 @@ def run_shard(
     out: str,
     code_version: str,
     corpus_fingerprint: str = "",
+    questions_fingerprint: str = "",
     question_limit: int = 0,
 ) -> None:
     """Execute one (tier, approach) shard. Resumable, and never fails the run.
@@ -390,6 +391,13 @@ def run_shard(
         code_version,
         "--corpus-fingerprint",
         corpus_fingerprint,
+        # The snapshot, not the image's copy. `submit-pipeline` wrote it, so it
+        # cannot change under the sweep, and the fingerprint below is what the
+        # shard checks it against on arrival.
+        "--questions",
+        f"{out}/experiments/{experiment_id}/questions.json",
+        "--questions-fingerprint",
+        questions_fingerprint,
     ]
     if question_limit:
         args += ["--limit", str(question_limit)]

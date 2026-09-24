@@ -303,6 +303,11 @@ class ShardRunner:
             tier=self.spec.tier,
             approach=self.spec.approach,
             code_version=self.spec.code_version,
+            # Copied from the spec, like code_version. Omitting it left every
+            # summary recording "" -- the value is computed in preflight and
+            # threaded into each shard as a cache-key input, then thrown away, so
+            # nothing in the stored results said which corpus produced them.
+            corpus_fingerprint=self.spec.corpus_fingerprint,
             planned=planned,
             already_done=already_done,
             executed=self._done,

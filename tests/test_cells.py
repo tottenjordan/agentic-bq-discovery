@@ -154,7 +154,9 @@ class _BoomError(Exception):
 def _executor() -> AdkCellExecutor:
     """An executor with no ADK behind it; only `_invoke` is exercised."""
     obj = AdkCellExecutor.__new__(AdkCellExecutor)
-    obj.spec = SimpleNamespace(approach="kc_search", tier=1, code_version="test")
+    obj.spec = SimpleNamespace(
+        approach="kc_search", tier=1, code_version="test", corpus_fingerprint="test-corpus"
+    )
     obj.app_name = "bench_kc_search"
     return obj
 
@@ -241,3 +243,25 @@ def test_a_first_time_success_records_one_attempt(monkeypatch: pytest.MonkeyPatc
     cell = _run(ex)
     assert cell.status == "ok"
     assert cell.attempts == 1
+
+
+def test_a_cell_records_the_corpus_it_came_from() -> None:
+    """Identity, like code_version: set on the blank cell so an *error* cell
+    carries it too. A run's failures are part of its record, and a failure with
+    no corpus attached cannot be compared against anything."""
+    from types import SimpleNamespace
+
+    executor = AdkCellExecutor.__new__(AdkCellExecutor)
+    executor.spec = SimpleNamespace(
+        approach="kc_search",
+        tier=1,
+        code_version="abc1234",
+        corpus_fingerprint="13f9fcb47deb5c32",
+    )
+    cell = executor._blank_cell(
+        {"id": "q1", "question": "text", "category": "single-table", "relevance": {}},
+        run_idx=0,
+    )
+    assert cell.corpus_fingerprint == "13f9fcb47deb5c32"
+    assert cell.code_version == "abc1234"
+    assert cell.status == "error", "blank cells start as error until the run resolves"

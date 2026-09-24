@@ -1084,6 +1084,25 @@ def run_shard(
 
     result = execute_shard(spec, config, store_for(out), questions)
     typer.echo(result.model_dump_json(indent=2))
+
+    # Exit non-zero when the shard did not finish cleanly, so KFP's retry can act
+    # on it. It used to exit 0 regardless: the shard wrote `_FAILED: 124 ok, 1
+    # failed`, Vertex recorded the task SUCCEEDED, KFP cached it, and the
+    # resubmit was a cache hit -- the shard never ran, resume never got a chance,
+    # and one transient 500 made a 3,000-cell sweep unrecoverable without
+    # `--no-cache`. The marker was written and then ignored.
+    #
+    # Retrying is cheap and safe because shards resume: the second attempt skips
+    # every cell already recorded `ok` and re-runs only what failed.
+    if not result.complete:
+        typer.secho(
+            f"FAIL  {result.shard_id}: {result.failed} cell(s) failed, "
+            f"{result.succeeded + result.already_done}/{result.planned} complete."
+            + (f" Aborted: {result.abort_reason}" if result.aborted else ""),
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
     if result.aborted:
         typer.secho(f"\nShard aborted: {result.abort_reason}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)

@@ -26,6 +26,7 @@ CELL: dict[str, Any] = {
     "status": "ok",
     "written_at": "2026-09-22T07:00:00+00:00",
     "code_version": "abc1234",
+    "corpus_fingerprint": "13f9fcb47deb5c32",
     "category": "single-table",
     "question": "which stations?",
     "relevance": {"must_have": ["weather_stations"], "nice_to_have": []},
@@ -181,3 +182,47 @@ def test_the_caveat_descriptions_say_the_thing() -> None:
     assert "NOT counted" in sink.COLUMN_DESCRIPTIONS["reranker_total_tokens"]
     assert "two indistinguishable causes" in sink.COLUMN_DESCRIPTIONS["ranked_count"]
     assert sink.COLUMN_DESCRIPTIONS["cache_warm_s"].startswith("Always 0")
+
+
+# ---------------------------------------------------------------------------
+# Which corpus produced this row
+#
+# The sink builds rows from merged *cells*, and a cell carried `code_version` but
+# nothing identifying the corpus. So `full-01` (15 tables) and `hard-full-01`
+# (24) land in the same table distinguishable only by an experiment-id naming
+# convention -- a habit, not a recorded fact.
+#
+# `corpus_fingerprint` already exists: preflight computes it, and it is threaded
+# into every shard as a cache-key input. It was simply never attributed to a
+# cell, so the one canonical identifier of "which corpus" never reached the place
+# people query.
+# ---------------------------------------------------------------------------
+def test_the_fingerprint_is_a_scalar_column_not_payload() -> None:
+    """A filter key. Buried in the JSON payload it cannot be clustered on and
+    reads awkwardly in every query that needs it."""
+    names = [name for name, _type in sink.SCALAR_COLUMNS]
+    assert "corpus_fingerprint" in names
+    assert "corpus_fingerprint" not in sink.PAYLOAD_FIELDS
+
+
+def test_the_fingerprint_reaches_a_row() -> None:
+    cell = {
+        "cell_key": "q1|kc_search|tier2|run0",
+        "question_id": "q1",
+        "approach": "kc_search",
+        "tier": 2,
+        "run_idx": 0,
+        "status": "ok",
+        "code_version": "14b273a",
+        "corpus_fingerprint": "13f9fcb47deb5c32",
+    }
+    row = sink.to_row(cell, "hard-full-01")
+    assert row["corpus_fingerprint"] == "13f9fcb47deb5c32"
+    assert row["code_version"] == "14b273a"
+
+
+def test_the_column_is_documented() -> None:
+    """Every scalar column carries a description; an undocumented one in a table
+    other people query is a column nobody trusts."""
+    assert "corpus_fingerprint" in sink.COLUMN_DESCRIPTIONS
+    assert sink.COLUMN_DESCRIPTIONS["corpus_fingerprint"].strip()

@@ -8,6 +8,7 @@ running an agent.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -273,3 +274,56 @@ async def test_a_summary_is_written_even_when_there_was_nothing_to_do(tmp_path: 
     summaries = load_summaries(store, spec.experiment_id)
     assert len(summaries) == 2, "the no-op resume must record a summary too"
     assert summaries[-1].executed == 0
+
+
+# ---------------------------------------------------------------------------
+# A shard that failed must say so in its exit code
+#
+# hard-full-01 lost one cell of 3,000 to a transient 500. The shard noticed --
+# it wrote `_FAILED: 124 ok, 1 failed` -- and then exited 0. Vertex recorded the
+# task SUCCEEDED, KFP cached it, and the resubmit was a cache hit: the shard
+# never ran, resume never got a chance, and the cell was unrecoverable except by
+# `--no-cache`.
+#
+# The marker was written and then ignored. Exiting non-zero lets the existing
+# `set_retry(num_retries=2)` do its job: resume skips the 124 good cells and only
+# the failed one is re-attempted.
+# ---------------------------------------------------------------------------
+async def test_an_incomplete_shard_is_not_complete(tmp_path: Path) -> None:
+    """The property already existed and nothing acted on it."""
+    spec = make_spec(runs=1, n_questions=3)
+    store = LocalStore(tmp_path)
+    executor = FakeExecutor(spec, fail_on={"q2"})
+    result = await ShardRunner(spec, store, executor, QUESTIONS, heartbeat_seconds=1e6).run()
+    assert result.failed == 1
+    assert result.complete is False
+
+
+async def test_a_clean_shard_is_complete(tmp_path: Path) -> None:
+    spec = make_spec(runs=1, n_questions=3)
+    store = LocalStore(tmp_path)
+    result = await ShardRunner(
+        spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6
+    ).run()
+    assert result.complete is True
+
+
+async def test_the_fingerprint_reaches_the_summary(tmp_path: Path) -> None:
+    """THE comparability gap.
+
+    `_result` copied `code_version` from the spec and silently dropped
+    `corpus_fingerprint`, so every shard summary recorded `""`. The value is
+    computed in preflight and threaded into each shard as a cache-key input, then
+    thrown away -- which leaves nothing in the stored results saying *which
+    corpus* produced them. Two corpora in one sink are then distinguishable only
+    by an experiment-id naming convention.
+    """
+    spec = make_spec(runs=1, n_questions=2, corpus_fingerprint="13f9fcb47deb5c32")
+    store = LocalStore(tmp_path)
+    result = await ShardRunner(
+        spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6
+    ).run()
+    assert result.corpus_fingerprint == "13f9fcb47deb5c32"
+
+    written = json.loads(store.read_text(f"{shard_prefix(spec)}/summary-0001.json"))
+    assert written["corpus_fingerprint"] == "13f9fcb47deb5c32"

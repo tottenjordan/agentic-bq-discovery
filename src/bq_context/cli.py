@@ -444,6 +444,72 @@ def _tier_profile(tier: int, cache: TableCache) -> dict[str, Any]:
     }
 
 
+def assess_questions(
+    questions: Mapping[str, Mapping[str, Any]], corpus_tables: Sequence[str]
+) -> list[str]:
+    """Judge a question set against the corpus it will be asked about.
+
+    Returns fatal problems; there are no warnings here, because every case this
+    catches makes a cell unscoreable rather than merely odd.
+
+    A ``must_have`` naming a table that does not exist scores 0 recall forever —
+    across every tier, every approach, every run — and reads as a genuine
+    finding. That is the same shape as the trap preflight was built for:
+    ``lookupContext`` returning empty instead of 403, producing a plausible
+    wrong answer rather than an error. It barely mattered while the question set
+    was ours and pinned to the corpus in the same commit. It matters a great
+    deal once ``--questions`` can point at a hand-written file.
+
+    ``distractor`` is checked too. One that does not exist is not a distractor,
+    it is a typo, and it silently disarms the trap question it was written for —
+    the one category where taking the bait is the thing being measured.
+
+    Every bad question is reported, not just the first: preflight against a real
+    corpus is minutes, and fixing a hand-written set one run at a time is
+    miserable.
+    """
+    import difflib  # noqa: PLC0415
+
+    known = set(corpus_tables)
+    problems: list[str] = []
+    for qid, question in questions.items():
+        relevance = question.get("relevance") or {}
+        if not relevance.get("must_have"):
+            problems.append(
+                f"{qid} has no must_have tables, so nothing can score it. "
+                f"Every question needs at least one table that answers it."
+            )
+            continue
+        for field in ("must_have", "nice_to_have", "distractor"):
+            for table in relevance.get(field, []):
+                if str(table) in known:
+                    continue
+                close = difflib.get_close_matches(str(table), known, n=1, cutoff=0.8)
+                hint = f" Did you mean {close[0]}?" if close else ""
+                problems.append(
+                    f"{qid} references {table} in {field}, which is not in the corpus.{hint}"
+                )
+    return problems
+
+
+def _assess_question_set(source: str | Path) -> list[str]:
+    """Load the question set, report it, and judge it against the corpus.
+
+    Separated from ``preflight`` only to keep that function under the complexity
+    limit; it is one step of the gate, not a reusable utility.
+    """
+    from bq_context.corpus import setup  # noqa: PLC0415
+    from bq_context.corpus.manifest import corpus_manifest  # noqa: PLC0415
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+
+    questions = _load_questions(source)
+    typer.echo(
+        f"questions: {len(questions)} loaded from {source}  "
+        f"fingerprint={questions_fingerprint(questions)}"
+    )
+    return assess_questions(questions, [t["name"] for t in corpus_manifest(setup)["tables"]])
+
+
 def assess_ladder(ladder: list[dict[str, Any]], *, empty: bool) -> tuple[list[str], list[str]]:
     """Judge an enrichment ladder. Returns (fatal problems, warnings).
 
@@ -1026,6 +1092,7 @@ def preflight(
         typer.Option("--json", help="Also write the ladder and corpus fingerprint here."),
     ] = None,
     out: OutOpt = DEFAULT_OUT,
+    questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     settle: Annotated[
         int,
         typer.Option(
@@ -1100,6 +1167,7 @@ def preflight(
         )
 
     problems, warnings = assess_ladder(ladder, empty=len(caches[tier]) == 0)
+    problems.extend(_assess_question_set(questions_file))
 
     if len(caches) > 1:
         search = _live_search(config)

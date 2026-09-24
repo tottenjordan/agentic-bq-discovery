@@ -24,6 +24,7 @@ from bq_context.cli import (
     _effective_identity,
     app,
     assess_ladder,
+    assess_questions,
     assess_search_convergence,
 )
 from bq_context.runner.cells import APPROACHES
@@ -617,12 +618,11 @@ def test_only_tiers_present_in_both_are_compared() -> None:
     assert assess_search_convergence({"tier0": 3, "tier1": 4}, {"tier0": 3}) == []
 
 
-def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Covers the wiring, which the unit tests above do not.
+def _stub_preflight_dependencies(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Everything `preflight` touches that needs a network or credentials.
 
-    Deleting the `assess_search_convergence(probe, again)` call from preflight
-    leaves every test in this section green, because they exercise the function
-    directly. Found by mutation.
+    Shared by the wiring tests below. Returns the probe-call log, which the
+    convergence test asserts on and the others ignore.
     """
     import time
 
@@ -665,6 +665,7 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
         },
     )
     monkeypatch.setattr(cli, "assess_ladder", lambda *_, **__: ([], []))
+    monkeypatch.setattr(cli, "_record_corpus", lambda *_a, **_k: None)
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
     class _Ctx:
@@ -679,6 +680,17 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         TableCache, "build", classmethod(lambda _cls, *_a, **_k: TableCache.empty())
     )
+    return calls
+
+
+def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Covers the wiring, which the unit tests above do not.
+
+    Deleting the `assess_search_convergence(probe, again)` call from preflight
+    leaves every test in this section green, because they exercise the function
+    directly. Found by mutation.
+    """
+    calls = _stub_preflight_dependencies(monkeypatch)
 
     result = runner.invoke(app, ["preflight", "--tier", "1", "--baseline", "0", "--settle", "1"])
     assert set(calls) == {1, 2}, f"expected two probe passes, saw {sorted(set(calls))}"
@@ -894,3 +906,136 @@ def test_a_missing_uri_exits_2_rather_than_raising(
     with pytest.raises(typer.Exit) as exc:
         cli._load_questions("gs://bucket/experiments/absent/questions.json")
     assert exc.value.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Questions must name tables the corpus actually has
+#
+# A question whose `must_have` names a table that does not exist scores 0 recall
+# forever, across every tier and approach, and reads as a genuine finding. It is
+# the same shape as the trap preflight was built for: `lookupContext` returning
+# empty rather than 403, producing a plausible wrong answer instead of an error.
+#
+# This matters far more once `--questions` can point at a hand-written file.
+# ---------------------------------------------------------------------------
+CORPUS_TABLES = ["austin_bikeshare_stations", "austin_bikeshare_trips", "nyc_taxi_trips_2022"]
+
+
+def _question(qid: str, **relevance: list[str]) -> dict:
+    return {"id": qid, "category": "single-table", "question": "t", "relevance": relevance}
+
+
+def test_a_question_set_that_fits_the_corpus_passes() -> None:
+    questions = {"q1": _question("q1", must_have=["austin_bikeshare_trips"])}
+    assert assess_questions(questions, CORPUS_TABLES) == []
+
+
+def test_an_unknown_must_have_is_a_problem() -> None:
+    questions = {"q1": _question("q1", must_have=["austin_bikeshare_station"])}
+    problems = assess_questions(questions, CORPUS_TABLES)
+
+    assert len(problems) == 1
+    assert "q1" in problems[0], "the question id is what makes this actionable"
+    assert "austin_bikeshare_station" in problems[0]
+
+
+def test_a_near_miss_gets_a_suggestion() -> None:
+    """The realistic error is a typo or a singular/plural slip, and the fix is
+    obvious once the right name is on screen."""
+    questions = {"q1": _question("q1", must_have=["austin_bikeshare_station"])}
+    assert "austin_bikeshare_stations" in assess_questions(questions, CORPUS_TABLES)[0]
+
+
+def test_a_wild_name_gets_no_misleading_suggestion() -> None:
+    questions = {"q1": _question("q1", must_have=["completely_unrelated_thing"])}
+    problem = assess_questions(questions, CORPUS_TABLES)[0]
+    assert "Did you mean" not in problem
+
+
+def test_an_unknown_distractor_is_also_a_problem() -> None:
+    """A distractor that does not exist is not a distractor, it is a typo — and
+    it silently disarms the trap question it was written for, which is the one
+    category where a wrong answer is the thing being measured."""
+    questions = {"q1": _question("q1", must_have=["nyc_taxi_trips_2022"], distractor=["taxi_zone"])}
+    assert assess_questions(questions, CORPUS_TABLES)
+
+
+def test_an_unknown_nice_to_have_is_also_a_problem() -> None:
+    questions = {"q1": _question("q1", must_have=["nyc_taxi_trips_2022"], nice_to_have=["nope"])}
+    assert assess_questions(questions, CORPUS_TABLES)
+
+
+def test_a_question_with_no_expected_answer_is_a_problem() -> None:
+    """Nothing can score it: recall over an empty must_have is undefined, and
+    the cell would count toward completeness while measuring nothing."""
+    questions = {"q1": _question("q1", must_have=[])}
+    problems = assess_questions(questions, CORPUS_TABLES)
+    assert len(problems) == 1
+    assert "q1" in problems[0]
+
+
+def test_every_bad_question_is_reported_not_just_the_first() -> None:
+    """Fixing a hand-written set one preflight run at a time is miserable, and
+    preflight against a real corpus is minutes, not seconds."""
+    questions = {
+        "q1": _question("q1", must_have=["nope_one"]),
+        "q2": _question("q2", must_have=["nope_two"]),
+    }
+    assert len(assess_questions(questions, CORPUS_TABLES)) == 2
+
+
+def test_the_shipped_question_set_fits_the_shipped_corpus() -> None:
+    """A guard on our own data. `experiments/questions.json` and the base corpus
+    are edited independently, and a rename on either side would otherwise show
+    up as a quietly worse result rather than an error."""
+    from bq_context.corpus import setup
+    from bq_context.corpus.manifest import corpus_manifest
+
+    questions = cli._load_questions(cli.DEFAULT_QUESTIONS)
+    tables = [t["name"] for t in corpus_manifest(setup)["tables"]]
+    assert assess_questions(questions, tables) == []
+
+
+def test_preflight_refuses_a_question_set_the_corpus_cannot_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covers the wiring, which the `assess_questions` tests above do not.
+
+    Deleting the `problems.extend(_assess_question_set(...))` call leaves every
+    one of them green, because they exercise the function directly. Found by
+    mutation, exactly like the convergence test above it.
+    """
+    _stub_preflight_dependencies(monkeypatch)
+    bad = tmp_path / "q.json"
+    bad.write_text(json.dumps({"questions": [_question("mine-q1", must_have=["no_such_table"])]}))
+
+    result = runner.invoke(
+        app,
+        ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", "--questions", str(bad)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "no_such_table" in result.output
+    assert "mine-q1" in result.output
+
+
+def test_preflight_passes_a_question_set_that_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: a gate that always fails is not a gate. Also pins that
+    the fingerprint is reported, which is how a user confirms the set they meant
+    is the set that ran."""
+    _stub_preflight_dependencies(monkeypatch)
+    good = tmp_path / "q.json"
+    good.write_text(
+        json.dumps({"questions": [_question("mine-q1", must_have=["austin_bikeshare_trips"])]})
+    )
+
+    result = runner.invoke(
+        app,
+        ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", "--questions", str(good)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "questions: 1 loaded" in result.output
+    assert "fingerprint=" in result.output

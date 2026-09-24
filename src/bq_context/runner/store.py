@@ -14,6 +14,7 @@ case on a crash is losing whatever was written since the last upload.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -52,6 +53,17 @@ class ArtifactStore(Protocol):
         ...
 
     def exists(self, path: str) -> bool: ...
+
+    def delete(self, path: str) -> None:
+        """Remove one object. Absent is not an error.
+
+        Deliberately the narrowest delete that works: one path, no prefix, no
+        recursion. This store holds twelve hours of irreplaceable agent output,
+        and the only thing the code ever removes is a shard's terminal marker —
+        seventeen bytes it wrote itself — so that ``_SUCCESS`` and ``_FAILED``
+        cannot both be present. Resist widening it.
+        """
+        ...
 
     def uri(self, path: str) -> str:
         """Fully-qualified location, for logs and run reports."""
@@ -95,6 +107,9 @@ class LocalStore:
 
     def exists(self, path: str) -> bool:
         return self._full(path).exists()
+
+    def delete(self, path: str) -> None:
+        self._full(path).unlink(missing_ok=True)
 
     def uri(self, path: str) -> str:
         return str(self._full(path))
@@ -147,6 +162,15 @@ class GcsStore:
 
     def exists(self, path: str) -> bool:
         return self._bucket.blob(self._blob_name(path)).exists()
+
+    def delete(self, path: str) -> None:
+        from google.cloud.exceptions import NotFound  # noqa: PLC0415
+
+        # `if_generation_match=0` is not usable here and a pre-check would race,
+        # so swallow the 404 instead. Deleting a marker that was never written
+        # is the normal first-run case, not an exceptional one.
+        with contextlib.suppress(NotFound):
+            self._bucket.blob(self._blob_name(path)).delete()
 
     def uri(self, path: str) -> str:
         return f"gs://{self.bucket_name}/{self._blob_name(path)}"

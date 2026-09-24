@@ -18,7 +18,7 @@ gs://{bucket}/
 │   ├── shards/{tier}__{approach}/           STABLE — resume and merge read this
 │   │   ├── attempt-NNNN.jsonl
 │   │   ├── summary-NNNN.json
-│   │   └── _SUCCESS | _FAILED
+│   │   └── _SUCCESS | _FAILED           exactly one; see below
 │   ├── merged/                              STABLE — deterministic, regenerated
 │   │   ├── results.jsonl
 │   │   └── missing.json
@@ -62,6 +62,27 @@ reused as enrichment changes, so a record under it is overwritten by the next
 provisioning; fingerprints accumulate. It is also the identifier already on every
 cell and in the BigQuery sink, so `corpus/{fingerprint}/` is where a reader lands
 after a `GROUP BY corpus_fingerprint`.
+
+## The shard markers are exclusive, and were not
+
+`_SUCCESS` and `_FAILED` describe a shard's terminal state, so exactly one
+should exist. Until this was fixed, `_write_marker` wrote one and left the
+other — and **every** `_FAILED` in the bucket, all six across two experiments,
+had a newer `_SUCCESS` beside it. The mechanism is ordinary: a shard fails and
+writes `_FAILED`, KFP retries it, the retry resumes into the same directory and
+writes `_SUCCESS`, and nothing removes the first.
+
+It survived because nothing in the code reads these files. The consumer is a
+person opening the bucket to find what broke, and for them the signal was wrong
+in exactly the situation they opened it for — a stale `_FAILED` is
+indistinguishable from a real one. The reverse case is worse: a shard that
+passed and later started failing kept advertising success, which is the marker
+someone trusts to mean the data is complete.
+
+`ArtifactStore.delete` exists for this one caller. It takes a single path, with
+no prefix or recursive form, on purpose: this store holds twelve hours of
+irreplaceable agent output and the only object the code ever removes is a
+seventeen-byte marker it wrote itself. Resist widening it.
 
 ## Two things that follow from the exit task's guarantee
 

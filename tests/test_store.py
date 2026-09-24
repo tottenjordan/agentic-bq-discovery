@@ -52,10 +52,47 @@ def test_both_stores_satisfy_the_protocol() -> None:
     """A method added to only one implementation is a runtime failure in the pipeline,
     where GcsStore is the one actually used."""
     for impl in (LocalStore, GcsStore):
-        assert hasattr(impl, "write_bytes"), impl.__name__
+        for name in ("write_bytes", "delete"):
+            assert hasattr(impl, name), f"{impl.__name__}.{name}"
     assert isinstance(LocalStore("/tmp"), ArtifactStore)  # noqa: S108
 
 
-@pytest.mark.parametrize("name", ["write_text", "write_bytes", "read_text", "exists", "uri"])
+@pytest.mark.parametrize(
+    "name", ["write_text", "write_bytes", "read_text", "exists", "uri", "delete"]
+)
 def test_the_protocol_declares_what_callers_use(name: str) -> None:
     assert hasattr(ArtifactStore, name)
+
+
+# ---------------------------------------------------------------------------
+# delete
+#
+# Added for one caller: the shard's terminal marker, which must be mutually
+# exclusive with its opposite. Deliberately the narrowest thing that works --
+# no recursive delete, no prefix delete. This store holds twelve hours of
+# irreplaceable agent output, and the only object the code ever removes is a
+# seventeen-byte marker it wrote itself.
+# ---------------------------------------------------------------------------
+def test_delete_removes_an_object(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text("a/b.txt", "x")
+    assert store.exists("a/b.txt")
+
+    store.delete("a/b.txt")
+    assert not store.exists("a/b.txt")
+
+
+def test_deleting_an_absent_object_is_not_an_error(tmp_path: Path) -> None:
+    """The caller writes one marker and clears the other without checking. On a
+    first run the other has never existed, which is the common case, not an
+    exceptional one."""
+    LocalStore(tmp_path).delete("never/existed.txt")
+
+
+def test_delete_leaves_siblings_alone(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text("shard/_FAILED", "1 failed")
+    store.write_text("shard/attempt-0001.jsonl", "{}")
+
+    store.delete("shard/_FAILED")
+    assert store.read_text("shard/attempt-0001.jsonl") == "{}", "deleted more than it was asked to"

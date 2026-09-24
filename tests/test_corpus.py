@@ -422,3 +422,60 @@ def test_every_added_table_is_wrong_for_every_question(monkeypatch: pytest.Monke
         relevance = question["relevance"]
         labelled |= set(relevance["must_have"]) | set(relevance.get("nice_to_have", []))
     assert not (added & labelled), f"added tables that are also answers: {sorted(added & labelled)}"
+
+
+# ---------------------------------------------------------------------------
+# Entry-link ids must be scoped to the corpus
+#
+# Found by provisioning the hard corpus for real. Entry links live in the shared
+# `@bigquery` entry group and their id carried no corpus marker, only a tier:
+#
+#     def-t3-county-fips-us-counties-geo-id
+#
+# The baseline corpus had already created that id, so setup found "Link exists"
+# and skipped -- leaving the hard corpus with *zero* glossary links. preflight
+# reported `terms=0` at every rung and warned that tier 2 adds nothing over
+# tier 1, which is exactly right: without term links, the tier-2 rung does not
+# exist. A whole factor level, silently missing.
+#
+# RESOURCE_PREFIX already scopes datasets, scan ids and the glossary itself. The
+# entry-link namespace was the one place it did not reach.
+# ---------------------------------------------------------------------------
+def test_the_default_corpus_keeps_its_existing_link_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unprefixed for the default corpus, deliberately.
+
+    Those links already exist in the project. Changing their ids would orphan
+    them: cleanup reconstructs ids from this same function, so it would compute
+    names that do not match what is deployed and quietly fail to delete them.
+    """
+    mod = _reload_setup(monkeypatch, RESOURCE_PREFIX="bigquery_context")
+    assert mod.definition_link_id(3, "county-fips", "us-counties", "geo-id") == (
+        "def-t3-county-fips-us-counties-geo-id"
+    )
+
+
+def test_a_variant_corpus_gets_its_own_link_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE fix. Two corpora in one project must not collide in @bigquery."""
+    base = _reload_setup(monkeypatch, RESOURCE_PREFIX="bigquery_context").definition_link_id(
+        3, "county-fips", "us-counties", "geo-id"
+    )
+    hard = _reload_setup(monkeypatch, RESOURCE_PREFIX="bigquery_context_hard").definition_link_id(
+        3, "county-fips", "us-counties", "geo-id"
+    )
+    assert hard != base
+    assert "bigquery-context-hard" in hard
+
+
+def test_link_ids_stay_valid_under_a_longer_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The longest id was already 62 of 63 characters. `_bounded_id` hashes on
+    overflow, so prefixing must not produce an invalid id."""
+    mod = _reload_setup(monkeypatch, CORPUS_PROFILE="hard", RESOURCE_PREFIX="bigquery_context_hard")
+    ids = [
+        mod.definition_link_id(tier, "air-quality-measure", view["name"], "arithmetic-mean")
+        for tier in mod.GLOSSARY_TIERS
+        for view in mod.CORPUS
+    ]
+    assert len(set(ids)) == len(ids), "prefixing collapsed two ids into one"
+    for link_id in ids:
+        assert DATAPLEX_ID.match(link_id), link_id
+        assert len(link_id) <= ID_LIMIT, f"{link_id} is {len(link_id)}"

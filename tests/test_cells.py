@@ -154,7 +154,9 @@ class _BoomError(Exception):
 def _executor() -> AdkCellExecutor:
     """An executor with no ADK behind it; only `_invoke` is exercised."""
     obj = AdkCellExecutor.__new__(AdkCellExecutor)
-    obj.spec = SimpleNamespace(approach="kc_search", tier=1, code_version="test")
+    obj.spec = SimpleNamespace(
+        approach="kc_search", tier=1, code_version="test", corpus_fingerprint="test-corpus"
+    )
     obj.app_name = "bench_kc_search"
     return obj
 

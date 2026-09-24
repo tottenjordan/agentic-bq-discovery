@@ -1137,8 +1137,20 @@ def run_shard(
     )
 
     from bq_context.runner.cells import execute_shard  # noqa: PLC0415
+    from bq_context.runner.resume import note_experiment_identity  # noqa: PLC0415
 
-    result = execute_shard(spec, config, store_for(out), questions)
+    store = store_for(out)
+    # Before the work, not after: the point is to be visible at the head of the
+    # log a resumed run produces, alongside the decision to reuse the prefix.
+    for warning in note_experiment_identity(
+        store,
+        experiment_id,
+        corpus_fingerprint=spec.corpus_fingerprint,
+        code_version=spec.code_version,
+    ):
+        typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)
+
+    result = execute_shard(spec, config, store, questions)
     typer.echo(result.model_dump_json(indent=2))
 
     # Exit non-zero when the shard did not finish cleanly, so KFP's retry can act

@@ -10,6 +10,7 @@ completed under one shard plan is still recognised under a different one.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from bq_context.runner.resume import (
     load_shard_records,
     new_run_id,
     next_attempt_path,
+    note_experiment_identity,
     run_prefix,
     shard_prefix,
 )
@@ -272,3 +274,79 @@ def test_cell_serializes_round_trip(status: str) -> None:
     assert restored.cell_key == original.cell_key
     assert restored.status == status
     assert restored.latency_s == 1.25
+
+
+# ---------------------------------------------------------------------------
+# Experiment identity
+#
+# `experiment_prefix` is derived from `experiment_id` alone, so resuming
+# `hard-full-01` after switching CORPUS_PROFILE would append cells measured
+# against a second corpus to the first one's shards, merge them into one
+# results.jsonl, and say nothing. Nothing else in the system would notice: the
+# KFP shard cache keys on the fingerprint, so the new cells are legitimately
+# new work.
+# ---------------------------------------------------------------------------
+def test_a_first_run_records_its_identity_and_says_nothing(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []
+    assert json.loads(store.read_text("experiments/exp/experiment.json"))["corpus_fingerprint"] == (
+        "aaa"
+    )
+
+
+def test_the_same_corpus_stays_silent(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []
+
+
+def test_a_changed_corpus_warns_and_names_both(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    warnings = note_experiment_identity(store, "exp", corpus_fingerprint="bbb", code_version="v1")
+
+    assert len(warnings) == 1
+    # Both, so the reader can tell which is the surprise without going digging.
+    assert "aaa" in warnings[0]
+    assert "bbb" in warnings[0]
+
+
+def test_a_changed_code_version_alone_does_not_warn(tmp_path: Path) -> None:
+    """It is *expected*: a new commit is what invalidates the shard cache, and
+    every resubmit after an edit has one. Warning here would fire on the normal
+    path 24 times a run and teach everyone to ignore the channel."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v9") == []
+
+
+def test_the_first_corpus_is_not_overwritten_by_a_later_one(tmp_path: Path) -> None:
+    """The record is what the experiment *was*. Letting the second run replace it
+    means the third run compares against the second and the collision goes
+    quiet — the bug hides itself after one resume."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    note_experiment_identity(store, "exp", corpus_fingerprint="bbb", code_version="v1")
+    third = note_experiment_identity(store, "exp", corpus_fingerprint="bbb", code_version="v1")
+
+    assert third, "the collision went silent on the third run"
+    assert json.loads(store.read_text("experiments/exp/experiment.json"))["corpus_fingerprint"] == (
+        "aaa"
+    )
+
+
+def test_an_unknown_fingerprint_is_not_worth_warning_about(tmp_path: Path) -> None:
+    """A local `run-shard` with no --corpus-fingerprint passes "". Comparing it
+    against a recorded one would warn on every ad-hoc run, and comparing two
+    empties says nothing anyway."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="", code_version="v1") == []
+
+
+def test_a_torn_record_does_not_stop_the_shard(tmp_path: Path) -> None:
+    """This runs at the head of a 90-minute shard. A diagnostics file that
+    cannot be parsed is not a reason to refuse to do the work."""
+    store = LocalStore(tmp_path)
+    store.write_text("experiments/exp/experiment.json", "{not json")
+    assert note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1") == []

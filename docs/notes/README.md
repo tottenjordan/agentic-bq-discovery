@@ -23,6 +23,10 @@ notes.
   sound and reproduces upstream's reranker finding; the **tier comparison is invalid**, because
   Dataplex search-index warm-up was confounded with shard execution order.
 
+- [The hard corpus](hard-corpus-results.md) — the opt-in 24-table variant made the **approach**
+  comparison discriminate (kc_context loses 6.3 points to its own reranker) while the **tier**
+  comparison stayed flat; plus the two bugs only a real run exposed.
+
 - [Upstream experiment: findings and implications](upstream-experiment.md) — their headline
   result is a **null result** (flat tier response, ceiling effect); the per-approach cost table
   that drives our sharding; the three globals; upstream's known defects.

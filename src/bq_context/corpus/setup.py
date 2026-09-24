@@ -566,8 +566,22 @@ def definition_link_id(tier: int, term_id: str, table: str, column: str) -> str:
 
     Tier is embedded so the same term/column across tier datasets yields distinct
     (and, when hashed, non-colliding) ids in the shared @bigquery entry group.
+
+    So is the corpus, for non-default prefixes, and that was found the expensive
+    way. Entry links live in the shared ``@bigquery`` group and the id carried no
+    corpus marker, so provisioning a second corpus in the same project hit the
+    baseline's existing ids, reported "Link exists", and skipped -- leaving the
+    new corpus with *zero* glossary links. preflight showed ``terms=0`` at every
+    rung and warned that tier 2 added nothing over tier 1, which was exactly
+    right: without term links the tier-2 factor level does not exist.
+
+    The default prefix stays unscoped on purpose. Those links are already
+    deployed, and ``cleanup.py`` reconstructs ids from this same function -- a
+    new scheme would compute names that do not match what exists and quietly
+    fail to delete them.
     """
-    return _bounded_id(f"def-t{tier}-{term_id}-{table}-{column}")
+    scope = "" if RESOURCE_PREFIX == _DEFAULT_RESOURCE_PREFIX else f"{RESOURCE_PREFIX}-"
+    return _bounded_id(f"{scope}def-t{tier}-{term_id}-{table}-{column}")
 
 
 def create_datasets_and_views():

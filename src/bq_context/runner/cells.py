@@ -30,6 +30,7 @@ from google.adk.runners import InMemoryRunner
 from google.genai import types
 
 from bq_context.context_cache import TableCache
+from bq_context.runner.backoff import retry_async
 from bq_context.runner.models import Cell, cell_key
 from bq_context.runner.shard import ShardRunner
 from bq_context.runtime import TierContext, get_datasets, get_scoped_tables, tier_scope
@@ -71,6 +72,15 @@ def needs_cache(approach: str) -> bool:
     return approach in _CACHE_USERS
 
 
+#: Backoff sleep, named so tests can replace it without patching asyncio for the
+#: whole process. The delays themselves are RetryPolicy's and are tested there.
+async def retry_sleep(seconds: float) -> None:
+    """Await the backoff interval between cell attempts."""
+    import asyncio  # noqa: PLC0415
+
+    await asyncio.sleep(seconds)
+
+
 class AdkCellExecutor:
     """Runs cells for one approach on a shared ``InMemoryRunner``."""
 
@@ -82,14 +92,36 @@ class AdkCellExecutor:
 
     async def __call__(self, question: Mapping[str, Any], run_idx: int) -> Cell:
         cell = self._blank_cell(question, run_idx)
+        attempts = 1
+
+        def _count(_exc: BaseException) -> None:
+            nonlocal attempts
+            attempts += 1
+
         try:
-            measured = await self._invoke(str(question["question"]))
+            # Retried because a transient failure here used to be permanent.
+            # hard-full-01 lost one cell of 3,000 to a single Google 500 and the
+            # whole sweep went red on `require_complete`, after finalize had
+            # already published every artifact. The shard's KFP retry cannot
+            # help: the shard *succeeds*, since a per-cell error is recorded and
+            # the loop moves on.
+            #
+            # `is_retryable` decides what counts -- 5xx and transport failures
+            # yes, 403/404 no -- so a permanent error still fails fast.
+            measured = await retry_async(
+                lambda: self._invoke(str(question["question"])),
+                sleep=retry_sleep,
+                on_retry=_count,
+            )
         except Exception as exc:  # noqa: BLE001 - recorded, never raised
             logger.warning("cell %s failed: %s: %s", cell.cell_key, type(exc).__name__, exc)
             cell.status = "error"
             cell.error_type = type(exc).__name__
             cell.error_message = str(exc)
+            cell.attempts = attempts
             return cell
+
+        cell.attempts = attempts
 
         cell.status = "ok"
         for field, value in measured.items():

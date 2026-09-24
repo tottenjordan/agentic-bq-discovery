@@ -671,3 +671,73 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
     assert len(calls) == 2, f"expected two probes, got {len(calls)}"
     assert "second pass" in result.output
     assert "confounded with elapsed time" in result.output
+
+
+# ---------------------------------------------------------------------------
+# run-shard's exit code
+# ---------------------------------------------------------------------------
+def test_run_shard_exits_nonzero_when_a_cell_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE fix. It used to exit 0 regardless of the outcome.
+
+    The shard wrote `_FAILED: 124 ok, 1 failed`, Vertex recorded the task
+    SUCCEEDED, KFP cached it, and the resubmit was a cache hit -- the shard never
+    ran, resume never got a chance, and one transient 500 made a 3,000-cell sweep
+    unrecoverable except with `--no-cache`. The marker was written and ignored.
+    """
+    from bq_context import cli
+    from bq_context.runner.models import ShardResult
+
+    incomplete = ShardResult(
+        shard_id="tier1__search_direct",
+        experiment_id="e",
+        tier=1,
+        approach="search_direct",
+        code_version="v1",
+        planned=125,
+        already_done=0,
+        executed=125,
+        succeeded=124,
+        failed=1,
+    )
+    monkeypatch.setattr("bq_context.runner.cells.execute_shard", lambda *_a, **_k: incomplete)
+    # Also stub the store: `run-shard` builds one from ADC, which exists on a
+    # developer box and not in CI. Leaving it real made these pass locally and
+    # fail on the runner with DefaultCredentialsError -- the same hermeticity
+    # trap as `_effective_identity` in the preflight test above.
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: object())
+
+    result = runner.invoke(
+        app, ["run-shard", "-e", "e", "--tier", "1", "--approach", "search_direct", "--limit", "1"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "1 cell(s) failed" in result.output
+
+
+def test_run_shard_exits_zero_when_the_shard_is_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The common path must not start failing runs that are fine."""
+    from bq_context import cli
+    from bq_context.runner.models import ShardResult
+
+    clean = ShardResult(
+        shard_id="tier1__search_direct",
+        experiment_id="e",
+        tier=1,
+        approach="search_direct",
+        code_version="v1",
+        planned=5,
+        already_done=0,
+        executed=5,
+        succeeded=5,
+        failed=0,
+    )
+    monkeypatch.setattr("bq_context.runner.cells.execute_shard", lambda *_a, **_k: clean)
+    # Also stub the store: `run-shard` builds one from ADC, which exists on a
+    # developer box and not in CI. Leaving it real made these pass locally and
+    # fail on the runner with DefaultCredentialsError -- the same hermeticity
+    # trap as `_effective_identity` in the preflight test above.
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: object())
+
+    result = runner.invoke(
+        app, ["run-shard", "-e", "e", "--tier", "1", "--approach", "search_direct", "--limit", "1"]
+    )
+    assert result.exit_code == 0, result.output

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,3 +124,120 @@ def test_the_scorer_knows_every_runnable_approach() -> None:
 def test_there_are_exactly_six_approaches() -> None:
     """The experiment is a 6x4x25x5 factorial; a seventh changes every published count."""
     assert len(APPROACHES) == len(APPROACH_ORDER) == 6
+
+
+# ---------------------------------------------------------------------------
+# Transient failures must not become permanent holes
+#
+# hard-full-01 lost one cell of 3,000 to a single Google 500:
+#
+#   trap-q2|search_direct|tier1|run1   error   InternalServerError
+#
+# and that failed the whole 3-hour sweep, after finalize had already merged,
+# scored, plotted and published every artifact -- `require_complete` counts only
+# `status == "ok"` as present.
+#
+# The shard's own KFP retry could not help: the shard *succeeded*. A per-cell
+# error is recorded and the loop moves on, so retry at shard granularity never
+# fires for this failure. `retry_async` already existed and already knew a 500 is
+# retryable; it was simply not wrapped around the agent invocation, only around
+# the reranker call.
+# ---------------------------------------------------------------------------
+class _BoomError(Exception):
+    """Carries an HTTP status the way google-genai surfaces one."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"{code} synthetic")
+        self.code = code
+
+
+def _executor() -> AdkCellExecutor:
+    """An executor with no ADK behind it; only `_invoke` is exercised."""
+    obj = AdkCellExecutor.__new__(AdkCellExecutor)
+    obj.spec = SimpleNamespace(approach="kc_search", tier=1, code_version="test")
+    obj.app_name = "bench_kc_search"
+    return obj
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """Skip the backoff wait; the delays are tested in test_backoff.py."""
+
+
+QUESTION = {"id": "q1", "question": "text", "category": "single-table", "relevance": {}}
+
+
+def _run(executor: AdkCellExecutor) -> object:
+    import asyncio
+
+    return asyncio.run(executor(QUESTION, run_idx=0))
+
+
+def test_a_transient_failure_is_retried_and_the_cell_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE regression. One 500 used to cost the entire run."""
+    calls = {"n": 0}
+
+    async def _flaky() -> dict[str, object]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _BoomError(500)
+        return {"ranked_tables": []}
+
+    ex = _executor()
+    monkeypatch.setattr(ex, "_invoke", lambda _q: _flaky())
+    monkeypatch.setattr("bq_context.runner.cells.retry_sleep", _no_sleep)
+    cell = _run(ex)
+    assert cell.status == "ok"
+    assert cell.attempts == 2, "attempts must record the retry, or the cost caveat is invisible"
+    assert calls["n"] == 2
+
+
+def test_a_permanent_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """403 is not transient. Retrying it burns the budget and, unlike a transport
+    failure, it already produced a billed response."""
+    calls = {"n": 0}
+
+    async def _denied() -> dict[str, object]:
+        calls["n"] += 1
+        raise _BoomError(403)
+
+    ex = _executor()
+    monkeypatch.setattr(ex, "_invoke", lambda _q: _denied())
+    monkeypatch.setattr("bq_context.runner.cells.retry_sleep", _no_sleep)
+    cell = _run(ex)
+    assert cell.status == "error"
+    assert calls["n"] == 1
+    assert cell.attempts == 1
+
+
+def test_an_exhausted_retry_budget_still_records_the_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cell that never succeeds must still be written, with its identity intact,
+    or the merge cannot tell a failure from a cell that was never attempted."""
+
+    async def _always() -> dict[str, object]:
+        raise _BoomError(503)
+
+    ex = _executor()
+    monkeypatch.setattr(ex, "_invoke", lambda _q: _always())
+    monkeypatch.setattr("bq_context.runner.cells.retry_sleep", _no_sleep)
+    cell = _run(ex)
+    assert cell.status == "error"
+    assert cell.error_type == "_BoomError"
+    assert cell.cell_key == "q1|kc_search|tier1|run0"
+    assert cell.attempts > 1
+
+
+def test_a_first_time_success_records_one_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The common path must not claim a retry that did not happen."""
+
+    async def _fine() -> dict[str, object]:
+        return {"ranked_tables": []}
+
+    ex = _executor()
+    monkeypatch.setattr(ex, "_invoke", lambda _q: _fine())
+    cell = _run(ex)
+    assert cell.status == "ok"
+    assert cell.attempts == 1

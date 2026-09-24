@@ -278,11 +278,33 @@ class ShardRunner:
             signal.signal(signal.SIGTERM, previous)
 
     def _write_marker(self, *, success: bool) -> None:
-        name = "_SUCCESS" if success else "_FAILED"
+        """Record the terminal state, and clear the state it is no longer in.
+
+        The clear is the whole point. Writing one marker and leaving the other
+        made every ``_FAILED`` in the results bucket a lie: a shard that fails
+        is retried by KFP, the retry resumes into the same directory and writes
+        ``_SUCCESS``, and the stale ``_FAILED`` stays. All six ``_FAILED``
+        markers across two experiments had a newer ``_SUCCESS`` beside them.
+
+        Nothing in the code reads these, which is why it survived. The consumer
+        is a human reading the bucket to find what broke, and for them the
+        signal was wrong in precisely the case they open it for: it could not
+        distinguish a shard that failed from one that failed and recovered.
+
+        The opposite direction matters more. A shard that passed and later
+        started failing kept advertising success, which is the marker someone
+        trusts to mean the data is complete.
+        """
+        name, stale = ("_SUCCESS", "_FAILED") if success else ("_FAILED", "_SUCCESS")
         body = f"{self._done - self._failed} ok, {self._failed} failed"
         if self._abort_reason:
             body += f"\naborted: {self._abort_reason}"
-        self.store.write_text(f"{shard_prefix(self.spec)}/{name}", body + "\n")
+        prefix = shard_prefix(self.spec)
+        self.store.write_text(f"{prefix}/{name}", body + "\n")
+        # After the write, not before: a crash between the two leaves both
+        # markers, which is the state we already know how to read. Clearing
+        # first would leave a completed shard with none at all.
+        self.store.delete(f"{prefix}/{stale}")
 
     def _finish(self, *, success: bool, planned: int, already_done: int) -> ShardResult:
         """Write the marker and the summary, then return the result.

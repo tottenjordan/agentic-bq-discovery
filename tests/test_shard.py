@@ -102,9 +102,74 @@ async def test_resume_skips_completed_and_reruns_errors(tmp_path: Path) -> None:
     assert r2.executed == 1
     assert r2.complete
     assert store.exists(f"{shard_prefix(spec)}/_SUCCESS")
+    assert not store.exists(f"{shard_prefix(spec)}/_FAILED"), (
+        "the recovered shard still advertises the failure it recovered from"
+    )
 
     final = completed_keys(load_shard_records(store, spec))
     assert final == set(spec.planned_cells())
+
+
+# ---------------------------------------------------------------------------
+# The markers must be mutually exclusive
+#
+# They were not, and never had been: `_write_marker` wrote one and left the
+# other. Every `_FAILED` in the results bucket -- all six, across two
+# experiments -- sat beside a newer `_SUCCESS`, because a shard that fails is
+# retried by KFP and the retry writes its own marker into the same directory.
+#
+# Nothing in the code reads them, which is why it survived. A human reading the
+# bucket to find what broke is the consumer, and for them the signal was wrong
+# in exactly the case they care about: it could not distinguish "failed and
+# never recovered" from "failed, then recovered".
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("first_fails", "expected", "stale"),
+    [
+        ({"q2"}, "_SUCCESS", "_FAILED"),
+        (set(), "_SUCCESS", "_FAILED"),
+    ],
+)
+async def test_only_one_terminal_marker_survives(
+    tmp_path: Path, first_fails: set[str], expected: str, stale: str
+) -> None:
+    spec = make_spec(runs=1, n_questions=3)
+    store = LocalStore(tmp_path)
+
+    await ShardRunner(
+        spec, store, FakeExecutor(spec, fail_on=first_fails), QUESTIONS, heartbeat_seconds=1e6
+    ).run()
+    await ShardRunner(spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6).run()
+
+    assert store.exists(f"{shard_prefix(spec)}/{expected}")
+    assert not store.exists(f"{shard_prefix(spec)}/{stale}")
+
+
+async def test_a_shard_that_regresses_drops_its_success_marker(tmp_path: Path) -> None:
+    """The other direction, and the one that matters more. A shard that passed
+    and then started failing must not keep advertising success — that is the
+    marker a human trusts to mean "this data is complete"."""
+    spec = make_spec(runs=1, n_questions=3)
+    store = LocalStore(tmp_path)
+
+    await ShardRunner(spec, store, FakeExecutor(spec), QUESTIONS, heartbeat_seconds=1e6).run()
+    assert store.exists(f"{shard_prefix(spec)}/_SUCCESS")
+
+    # A fresh experiment id would be a different shard; this is the same one
+    # re-run after its cells were invalidated, which is what a forced rerun does.
+    for path in store.list_paths(shard_prefix(spec)):
+        if path.endswith(".jsonl"):
+            store.delete(path)
+    await ShardRunner(
+        spec,
+        store,
+        FakeExecutor(spec, fail_on={"q1", "q2", "q3"}),
+        QUESTIONS,
+        heartbeat_seconds=1e6,
+    ).run()
+
+    assert store.exists(f"{shard_prefix(spec)}/_FAILED")
+    assert not store.exists(f"{shard_prefix(spec)}/_SUCCESS")
 
 
 async def test_a_completed_shard_does_no_work(tmp_path: Path) -> None:

@@ -41,7 +41,22 @@ PROFILES: dict[str, dict[str, Any]] = {
     "smoke": {"tiers": [3], "runs": 1, "question_limit": 3, "require_complete": True},
     # The exact 24-shard topology of the full run, at 1/25th the cost. This is
     # where P=8 contention, cache warm, and serialization problems surface.
+    #
+    # NB it exercises the *machinery*, not the science. `question_limit` takes the
+    # first five questions and all five are `single-table`, so a pilot touches
+    # none of the four traps, none of the multi-table questions, and none of the
+    # twelve that name no place. Its tier response is close to meaningless -- a
+    # hard-corpus pilot reported +0.000 across every approach, on questions whose
+    # answer was never in doubt.
     "pilot": {"tiers": [0, 1, 2, 3], "runs": 1, "question_limit": 5, "require_complete": True},
+    # 600 cells. Every question, every tier, once -- the cheapest run that is
+    # actually about the experiment rather than the plumbing. Use it to decide
+    # whether a corpus or enrichment change moved anything before paying for
+    # `full`; the traps and the underspecified questions only appear here.
+    #
+    # One run, so per-cell variance is not averaged out. Read a difference here as
+    # a signal worth confirming, never as a measurement.
+    "survey": {"tiers": [0, 1, 2, 3], "runs": 1, "question_limit": 0, "require_complete": True},
     # 3,000 cells.
     "full": {"tiers": [0, 1, 2, 3], "runs": 5, "question_limit": 0, "require_complete": True},
 }

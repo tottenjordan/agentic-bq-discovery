@@ -1463,7 +1463,9 @@ def ensure_image(image: str, tag: str, region: str = "") -> None:
 @app.command("submit-pipeline")
 def submit_pipeline_cmd(
     experiment_id: ExperimentId,
-    profile: Annotated[str, typer.Option("--profile", help="smoke | pilot | full")] = "smoke",
+    profile: Annotated[
+        str, typer.Option("--profile", help="smoke | pilot | survey | full")
+    ] = "smoke",
     out: OutOpt = DEFAULT_OUT,
     image: Annotated[str, typer.Option("--image", help="Overrides $BQ_CONTEXT_IMAGE.")] = "",
     service_account: Annotated[

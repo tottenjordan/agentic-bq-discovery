@@ -250,7 +250,7 @@ def test_caching_is_off_where_staleness_would_mislead(spec: dict[str, Any], task
 # Profiles
 # ---------------------------------------------------------------------------
 def test_profiles_cover_the_planned_escalation() -> None:
-    assert set(PROFILES) == {"smoke", "pilot", "full"}
+    assert set(PROFILES) == {"smoke", "pilot", "survey", "full"}
 
 
 def test_smoke_runs_tier_three_not_tier_zero() -> None:
@@ -263,6 +263,36 @@ def test_smoke_runs_tier_three_not_tier_zero() -> None:
 def test_full_is_the_published_factorial() -> None:
     assert PROFILES["full"]["tiers"] == [0, 1, 2, 3]
     assert PROFILES["full"]["runs"] == 5
+
+
+def test_survey_runs_every_question_once() -> None:
+    """The gap `pilot` left, found by running it.
+
+    `pilot` takes the first five questions and all five happen to be
+    `single-table`, so a hard-corpus pilot exercised none of the four traps, none
+    of the multi-table questions, and none of the twelve that name no place --
+    which are exactly the ones a near-neighbour corpus is meant to make hard. Its
+    flat tier response measured almost nothing.
+
+    `full` would cover them, at 3,000 cells. This is the missing rung: every
+    question, every tier, once.
+    """
+    survey = PROFILES["survey"]
+    assert survey["question_limit"] == 0, "0 means all 25 questions"
+    assert survey["runs"] == 1
+    assert survey["tiers"] == [0, 1, 2, 3]
+
+
+def test_survey_is_a_quarter_of_full() -> None:
+    """The point of it: breadth without repetition. 600 cells against 3,000."""
+    assert PROFILES["survey"]["runs"] * 5 == PROFILES["full"]["runs"]
+    assert PROFILES["survey"]["question_limit"] == PROFILES["full"]["question_limit"]
+    assert PROFILES["survey"]["tiers"] == PROFILES["full"]["tiers"]
+
+
+def test_every_profile_requires_a_complete_sweep() -> None:
+    """A partial sweep silently scores against missing cells."""
+    assert all(p["require_complete"] for p in PROFILES.values())
 
 
 def test_profiles_do_not_set_parallelism() -> None:

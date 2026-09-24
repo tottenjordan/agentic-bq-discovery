@@ -217,11 +217,33 @@ def _config() -> ExperimentConfig:
         raise typer.Exit(2) from exc
 
 
-def _load_questions(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        typer.secho(f"Questions file not found: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(2)
-    raw = json.loads(path.read_text())
+def _load_questions(source: str | Path) -> dict[str, dict[str, Any]]:
+    """Load a question set from a local path or a ``gs://`` URI.
+
+    The URI form is what a shard uses: ``submit-pipeline`` snapshots the set into
+    the experiment prefix, and every shard reads that copy rather than whatever
+    the submitter's filesystem happened to hold.
+
+    Both go through ``store_for``, so there is one GCS client in the process and
+    the local branch stays exercised by every test. A missing source exits 2
+    either way — a typo'd path is the likeliest error here, and the message is
+    the whole diagnosis.
+    """
+    location = str(source)
+    try:
+        if location.startswith("gs://"):
+            prefix, _, name = location.rpartition("/")
+            text = store_for(prefix).read_text(name)
+        else:
+            # Deliberately not through the store. A local run then has no
+            # dependency on one at all, which is what keeps `run-shard` usable
+            # with no credentials — and what keeps the local branch exercised by
+            # every test rather than only by the ones that build a store.
+            text = Path(location).read_text()
+    except (FileNotFoundError, OSError):
+        typer.secho(f"Questions file not found: {location}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from None
+    raw = json.loads(text)
     items = raw["questions"] if isinstance(raw, dict) else raw
     return {str(q["id"]): q for q in items}
 

@@ -14,6 +14,7 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from bq_context import cli
@@ -827,3 +828,69 @@ def test_the_warning_names_the_question_so_it_can_be_acted_on() -> None:
     assert len(warnings) == 1
     assert "cat-kiosk" in warnings[0]
     assert "cat-knots" not in warnings[0], "a settled question must not be named"
+
+
+# ---------------------------------------------------------------------------
+# Loading a question set
+#
+# The shards read a snapshot out of the bucket, so the loader has to take a URI
+# as well as a path. Everything else about it must not move: a missing file is
+# the most likely user error here, and the message is the whole diagnosis.
+# ---------------------------------------------------------------------------
+def _write_questions(path: Path, payload: object) -> Path:
+    path.write_text(json.dumps(payload))
+    return path
+
+
+QUESTION = {"id": "q1", "category": "single-table", "question": "t", "relevance": {}}
+
+
+def test_a_local_question_file_still_loads(tmp_path: Path) -> None:
+    src = _write_questions(tmp_path / "q.json", {"questions": [QUESTION]})
+    assert list(cli._load_questions(src)) == ["q1"]
+
+
+def test_a_bare_list_still_loads(tmp_path: Path) -> None:
+    """Both shapes are in the wild; `experiments/questions.json` is the dict
+    form and hand-written sets are usually the list form."""
+    src = _write_questions(tmp_path / "q.json", [QUESTION])
+    assert list(cli._load_questions(src)) == ["q1"]
+
+
+def test_a_question_set_loads_from_a_uri(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shard's path. `store_for` is the seam, so a LocalStore stands in for
+    GCS and the branch is exercised without a network or credentials."""
+    # `store_for` is handed the *prefix* and the object is read by basename,
+    # so the stand-in store is rooted where the real GcsStore would be.
+    seen: list[str] = []
+
+    def _store(location: str) -> LocalStore:
+        seen.append(location)
+        return LocalStore(tmp_path)
+
+    LocalStore(tmp_path).write_text("questions.json", json.dumps({"questions": [QUESTION]}))
+    monkeypatch.setattr(cli, "store_for", _store)
+
+    loaded = cli._load_questions("gs://bucket/experiments/e/questions.json")
+    assert seen == ["gs://bucket/experiments/e"], "the prefix was not split off the object name"
+    assert list(loaded) == ["q1"]
+
+
+def test_a_missing_question_file_exits_2_and_names_it(tmp_path: Path) -> None:
+    """A typo'd path is the likeliest failure, and it must not surface as a
+    traceback three frames deep in json."""
+    missing = tmp_path / "nope.json"
+    with pytest.raises(typer.Exit) as exc:
+        cli._load_questions(missing)
+    assert exc.value.exit_code == 2
+
+
+def test_a_missing_uri_exits_2_rather_than_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shard pointed at a snapshot that was never written should say so, not
+    raise FileNotFoundError from three frames down."""
+    monkeypatch.setattr(cli, "store_for", lambda _location: LocalStore(tmp_path))
+    with pytest.raises(typer.Exit) as exc:
+        cli._load_questions("gs://bucket/experiments/absent/questions.json")
+    assert exc.value.exit_code == 2

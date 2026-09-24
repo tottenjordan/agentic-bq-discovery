@@ -97,6 +97,35 @@ def run_preflight(store: ArtifactStore, experiment_id: str, run_id: str) -> dict
         return dict(EMPTY_PREFLIGHT)
 
 
+def effective_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """``environ`` with the corpus identity resolved to what is actually in effect.
+
+    The distinction matters, and the first live run found it. ``.env`` carries
+    ``RESOURCE_PREFIX`` but not ``CORPUS_PROFILE``, so only the first is
+    forwarded to the tasks and the container falls back to ``setup.py``'s
+    default. The manifest therefore said ``corpus_profile: ""`` for a run that
+    measured ``base`` — and "" reads as *unknown*, which is worse than wrong in
+    the one file whose entire job is provenance.
+
+    ``setup.py`` resolves both defaults at import and is what every other reader
+    of these values uses, so it is the single source of truth rather than a
+    default repeated here. Best effort: it raises on an invalid profile, and a
+    run that got that far has 24 shards' worth of evidence it did not.
+    """
+    resolved = dict(environ)
+    try:
+        # Imported here, not at module scope: setup.py raises on an invalid
+        # CORPUS_PROFILE, and publish.py is imported by a component body that
+        # must not fail for a diagnostics reason.
+        from bq_context.corpus import setup  # noqa: PLC0415
+
+        resolved["CORPUS_PROFILE"] = environ.get("CORPUS_PROFILE") or setup.CORPUS_PROFILE
+        resolved["RESOURCE_PREFIX"] = environ.get("RESOURCE_PREFIX") or setup.RESOURCE_PREFIX
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not resolve the corpus identity; recording it as configured")
+    return resolved
+
+
 def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
     # them into a dataclass would add a type used at one call site and hide none
     # of the coupling.

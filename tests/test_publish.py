@@ -15,6 +15,7 @@ import pytest
 
 from bq_context.pipeline.publish import (
     EMPTY_REPORT,
+    effective_env,
     merge_args,
     merge_report,
     publish_figures,
@@ -180,6 +181,28 @@ def test_an_unconfigured_environment_leaves_the_fields_empty_not_absent() -> Non
     manifest = _manifest(environ={})
     assert manifest["resource_prefix"] == ""
     assert manifest["corpus_profile"] == ""
+
+
+def test_the_manifest_records_the_corpus_actually_in_effect() -> None:
+    """THE regression, caught by the first live run. `.env` carries
+    RESOURCE_PREFIX but not CORPUS_PROFILE, so only the first is forwarded and
+    the container falls back to setup.py's default. The manifest said
+    `corpus_profile: ""` for a run that measured `base` — and "" reads as
+    "unknown", which is worse than wrong in the one file whose job is provenance.
+    """
+    from bq_context.corpus import setup
+
+    manifest = _manifest(environ=effective_env({}))
+    assert manifest["corpus_profile"] == setup.CORPUS_PROFILE
+    assert manifest["resource_prefix"] == setup.RESOURCE_PREFIX
+    assert manifest["corpus_profile"], "an empty effective profile is not a value"
+
+
+def test_an_explicit_setting_still_wins() -> None:
+    """The resolution must not override a submitter who did set them."""
+    resolved = effective_env({"RESOURCE_PREFIX": "custom_prefix", "AGENT_MODEL": "m"})
+    assert resolved["RESOURCE_PREFIX"] == "custom_prefix"
+    assert resolved["AGENT_MODEL"] == "m", "unrelated variables were dropped"
 
 
 def test_the_manifest_lands_beside_the_report_it_explains(tmp_path: Path) -> None:

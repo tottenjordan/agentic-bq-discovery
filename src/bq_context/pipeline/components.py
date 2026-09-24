@@ -520,6 +520,7 @@ def finalize(
     # embed the pipeline job id and change every run; these are the copies a
     # human goes looking for weeks later.
     from bq_context.pipeline.publish import (
+        effective_env,
         ensure_placeholder,
         merge_report,
         publish_figures,
@@ -565,7 +566,11 @@ def finalize(
         question_limit=question_limit,
         report=report_json,
         corpus=run_preflight(store, experiment_id, run_id),
-        environ=os.environ,
+        # Not os.environ directly: CORPUS_PROFILE is absent from .env, so it is
+        # never forwarded and the container falls back to setup.py's default.
+        # The first live manifest said corpus_profile "" for a run that measured
+        # base.
+        environ=effective_env(os.environ),
     )
     print(f"manifest  {store.uri(publish_manifest(store, experiment_id, run_id, manifest))}")
 

@@ -10,6 +10,7 @@ completed under one shard plan is still recognised under a different one.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,7 +23,9 @@ from bq_context.runner.resume import (
     completed_keys,
     latest_attempt_number,
     load_shard_records,
+    new_run_id,
     next_attempt_path,
+    run_prefix,
     shard_prefix,
 )
 from bq_context.runner.store import LocalStore, store_for
@@ -216,6 +219,50 @@ def test_shard_prefix_is_stable_across_reruns() -> None:
         code_version="v1",
     )
     assert shard_prefix(spec) == f"experiments/pilot-01/shards/{shard_id(3, 'bq_tools')}"
+
+
+# ---------------------------------------------------------------------------
+# Run identity
+#
+# `experiment_prefix` is deliberately stable so resume works, which means every
+# execution of one experiment id wrote its report, HTML and figures to the same
+# paths. `hard-full-01` ran three times and kept one report: the two earlier
+# ones — including the failed run whose report was the evidence for the shard
+# exit-code bug — were overwritten. `run_id` gives each execution its own folder
+# for derived output while leaving the shard and merged paths alone.
+# ---------------------------------------------------------------------------
+def test_two_runs_get_different_ids() -> None:
+    assert new_run_id("abc1234") != new_run_id("abc1234", now=datetime(2026, 9, 24, tzinfo=UTC))
+
+
+def test_a_run_id_sorts_chronologically() -> None:
+    """Lexical order must equal time order, or `gcloud storage ls` lists a
+    bucket's runs in an order that means nothing."""
+    early = new_run_id("aaa", now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
+    late = new_run_id("aaa", now=datetime(2026, 11, 2, 3, 4, 5, tzinfo=UTC))
+    assert early < late
+
+
+def test_a_run_id_names_the_commit_that_produced_it() -> None:
+    """So the folder is readable without opening the manifest inside it."""
+    assert new_run_id("14b273a", now=datetime(2026, 9, 24, 16, 46, 12, tzinfo=UTC)) == (
+        "20260924T164612Z-14b273a"
+    )
+
+
+def test_the_run_prefix_nests_under_the_experiment() -> None:
+    assert run_prefix("hard-full-01", "20260924T164612Z-14b273a") == (
+        "experiments/hard-full-01/runs/20260924T164612Z-14b273a"
+    )
+
+
+@pytest.mark.parametrize("hostile", ["../../etc", "a/b", "", "   "])
+def test_a_run_id_that_would_escape_its_folder_is_refused(hostile: str) -> None:
+    """A run id reaches this from a pipeline parameter, so it is caller input.
+    A slash would silently nest the run under a path nobody looks in; `..` would
+    write over another experiment."""
+    with pytest.raises(ValueError, match="run id"):
+        run_prefix("exp", hostile)
 
 
 @pytest.mark.parametrize("status", ["ok", "error"])

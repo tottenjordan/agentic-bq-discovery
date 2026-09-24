@@ -407,6 +407,7 @@ def finalize(
     report: dsl.Output[dsl.Markdown],
     summary: dsl.Output[dsl.HTML],
     run_metrics: dsl.Output[dsl.Metrics],
+    run_id: str = "",
     require_complete: bool = True,
     question_limit: int = 0,
     refresh_figures: bool = False,
@@ -504,9 +505,9 @@ def finalize(
     from bq_context.runner.store import store_for
 
     store = store_for(out)
-    if published := publish_report(store, experiment_id, report.path):
+    if published := publish_report(store, experiment_id, run_id, report.path):
         print(f"report    {store.uri(published)}", flush=True)
-    for figure in publish_figures(store, experiment_id, plots_dir):
+    for figure in publish_figures(store, experiment_id, run_id, plots_dir):
         print(f"figure    {store.uri(figure)}", flush=True)
 
     # Populate every artifact *before* anything can raise. SystemExit propagates
@@ -517,7 +518,7 @@ def finalize(
     ensure_placeholder(
         summary.path, f"<html><body><h1>{experiment_id}</h1><p>No report.</p></body></html>"
     )
-    publish_summary(store, experiment_id, summary.path)
+    publish_summary(store, experiment_id, run_id, summary.path)
 
     report_json = merge_report(store, experiment_id)
     merged.uri = store.uri(f"{experiment_prefix(experiment_id)}/merged/results.jsonl")

@@ -32,22 +32,46 @@ PNG = b"\x89PNG\r\n\x1a\n"
 # ---------------------------------------------------------------------------
 # Copying output to the stable prefix
 # ---------------------------------------------------------------------------
-def test_the_report_lands_under_the_experiment_prefix(tmp_path: Path) -> None:
+RUN = "20260924T164612Z-abc1234"
+
+
+def test_the_report_lands_under_the_run_prefix(tmp_path: Path) -> None:
     """Not a KFP artifact path: those embed the pipeline job id and change every
-    run, so a human looking a month later would not find them."""
+    run, so a human looking a month later would not find them. And not the bare
+    experiment prefix either — that is one path per *experiment*, so the second
+    execution overwrote the first."""
     store = LocalStore(tmp_path / "store")
     source = tmp_path / "report.md"
     source.write_text("# Results\n")
 
-    assert publish_report(store, "exp", str(source)) == "experiments/exp/scoring/report.md"
-    assert store.read_text("experiments/exp/scoring/report.md") == "# Results\n"
+    target = f"experiments/exp/runs/{RUN}/scoring/report.md"
+    assert publish_report(store, "exp", RUN, str(source)) == target
+    assert store.read_text(target) == "# Results\n"
+
+
+def test_a_second_execution_does_not_overwrite_the_first(tmp_path: Path) -> None:
+    """THE regression. `hard-full-01` ran three times and kept one report: the
+    original and the failed run were both overwritten by the recovery run, and
+    the failed run's report was the evidence for the shard exit-code bug."""
+    store = LocalStore(tmp_path / "store")
+    first = tmp_path / "first.md"
+    first.write_text("# First\n")
+    second = tmp_path / "second.md"
+    second.write_text("# Second\n")
+
+    a = publish_report(store, "exp", "20260924T100000Z-aaa", str(first))
+    b = publish_report(store, "exp", "20260924T110000Z-bbb", str(second))
+
+    assert a != b
+    assert store.read_text(str(a)) == "# First\n"
+    assert store.read_text(str(b)) == "# Second\n"
 
 
 def test_a_missing_report_is_not_fatal(tmp_path: Path) -> None:
     """`score` exits 1 when there are no merged results. The exit task must still
     publish everything else rather than dying on the first absent file."""
     store = LocalStore(tmp_path / "store")
-    assert publish_report(store, "exp", str(tmp_path / "nope.md")) is None
+    assert publish_report(store, "exp", RUN, str(tmp_path / "nope.md")) is None
 
 
 def test_every_figure_is_copied(tmp_path: Path) -> None:
@@ -57,10 +81,10 @@ def test_every_figure_is_copied(tmp_path: Path) -> None:
         (plots / f"{name}.png").write_bytes(PNG)
     store = LocalStore(tmp_path / "store")
 
-    written = publish_figures(store, "exp", str(plots))
+    written = publish_figures(store, "exp", RUN, str(plots))
     assert written == [
-        "experiments/exp/plots/discovery_vs_final.png",
-        "experiments/exp/plots/latency_cost.png",
+        f"experiments/exp/runs/{RUN}/plots/discovery_vs_final.png",
+        f"experiments/exp/runs/{RUN}/plots/latency_cost.png",
     ]
     assert store.exists(written[0])
 
@@ -73,14 +97,24 @@ def test_figures_keep_their_bytes(tmp_path: Path) -> None:
     (plots / "x.png").write_bytes(payload)
     store = LocalStore(tmp_path / "store")
 
-    publish_figures(store, "exp", str(plots))
-    assert (tmp_path / "store" / "experiments/exp/plots/x.png").read_bytes() == payload
+    written = publish_figures(store, "exp", RUN, str(plots))
+    assert (tmp_path / "store" / written[0]).read_bytes() == payload
 
 
 def test_a_missing_plots_directory_is_not_fatal(tmp_path: Path) -> None:
     """`recall_vs_tier` is skipped below two tiers, and `plot` can fail entirely."""
     store = LocalStore(tmp_path / "store")
-    assert publish_figures(store, "exp", str(tmp_path / "absent")) == []
+    assert publish_figures(store, "exp", RUN, str(tmp_path / "absent")) == []
+
+
+def test_the_merged_results_stay_off_the_run_folder() -> None:
+    """Resume and merge both build this path from `experiment_id` alone. Version
+    it and a resumed run cannot find the previous one's work — which is the one
+    thing this layout change promised not to break."""
+    from bq_context.runner.resume import experiment_prefix, run_prefix
+
+    assert not run_prefix("exp", RUN).startswith(f"{experiment_prefix('exp')}/merged")
+    assert experiment_prefix("exp") == "experiments/exp"
 
 
 # ---------------------------------------------------------------------------

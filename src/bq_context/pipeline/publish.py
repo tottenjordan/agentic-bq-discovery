@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from bq_context.runner.resume import experiment_prefix
+from bq_context.runner.resume import run_prefix
 from bq_context.scoring.merge import missing_path
 
 if TYPE_CHECKING:
@@ -31,25 +31,35 @@ logger = logging.getLogger(__name__)
 EMPTY_REPORT: dict[str, Any] = {"expected": 0, "present": 0, "missing_count": 0, "missing": []}
 
 
-def publish_report(store: ArtifactStore, experiment_id: str, report_path: str) -> str | None:
-    """Copy the markdown report to the stable experiment prefix. Returns its path."""
+def publish_report(
+    store: ArtifactStore, experiment_id: str, run_id: str, report_path: str
+) -> str | None:
+    """Copy the markdown report to this execution's folder. Returns its path.
+
+    Not a KFP artifact path: those embed the pipeline job id and change every
+    run, so the copy a human goes looking for weeks later would not be there.
+    Not the bare experiment prefix either — that is one path per *experiment*,
+    and the second execution of an experiment id silently overwrote the first.
+    """
     source = Path(report_path)
     if not source.exists():
         logger.warning("No report at %s; nothing to publish", report_path)
         return None
-    target = f"{experiment_prefix(experiment_id)}/scoring/report.md"
+    target = f"{run_prefix(experiment_id, run_id)}/scoring/report.md"
     store.write_text(target, source.read_text())
     return target
 
 
-def publish_figures(store: ArtifactStore, experiment_id: str, plots_dir: str) -> list[str]:
-    """Copy every PNG to the stable prefix. Returns the paths written.
+def publish_figures(
+    store: ArtifactStore, experiment_id: str, run_id: str, plots_dir: str
+) -> list[str]:
+    """Copy every PNG to this execution's folder. Returns the paths written.
 
     ``write_bytes`` rather than ``write_text``: the latter hard-codes
     ``application/json``, which uploads the right bytes under a type that makes a
     browser download the figure instead of showing it.
     """
-    prefix = experiment_prefix(experiment_id)
+    prefix = run_prefix(experiment_id, run_id)
     written = []
     for png in sorted(Path(plots_dir).glob("*.png")):
         target = f"{prefix}/plots/{png.name}"
@@ -121,11 +131,13 @@ def ensure_placeholder(path: str, body: str) -> None:
         target.write_text(body)
 
 
-def publish_summary(store: ArtifactStore, experiment_id: str, summary_path: str) -> str | None:
-    """Copy the executive HTML to the stable prefix. Returns its path."""
+def publish_summary(
+    store: ArtifactStore, experiment_id: str, run_id: str, summary_path: str
+) -> str | None:
+    """Copy the executive HTML to this execution's folder. Returns its path."""
     source = Path(summary_path)
     if not source.exists():
         return None
-    target = f"{experiment_prefix(experiment_id)}/scoring/executive.html"
+    target = f"{run_prefix(experiment_id, run_id)}/scoring/executive.html"
     store.write_text(target, source.read_text())
     return target

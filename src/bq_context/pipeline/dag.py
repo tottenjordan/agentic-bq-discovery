@@ -94,6 +94,7 @@ def bq_context_pipeline(
     out: str,
     experiment_id: str = "pilot-01",
     code_version: str = "unknown",
+    run_id: str = "",
     service_account: str = "",
     runs: int = 5,
     question_limit: int = 0,
@@ -109,6 +110,11 @@ def bq_context_pipeline(
     ``experiment_id`` is load-bearing: the GCS prefix derives from it, so
     resubmitting with the same value resumes rather than restarting. Never
     derive it from a timestamp inside the pipeline.
+
+    ``run_id`` is the opposite: unique per *execution*, so each one's report and
+    figures get their own folder instead of overwriting the last. It comes in as
+    a parameter for the same reason ``experiment_id`` does — generated inside the
+    pipeline, each task would mint a different one and scatter the output.
     """
     validate = components.validate_config(project=project, out=out, expect_identity=service_account)
     _apply_config_env(validate)
@@ -151,6 +157,7 @@ def bq_context_pipeline(
     finalize = components.finalize(
         project=project,
         experiment_id=experiment_id,
+        run_id=run_id,
         out=out,
         runs=runs,
         tiers=tiers,

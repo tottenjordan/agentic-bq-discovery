@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from bq_context.runner.models import Cell
@@ -32,11 +33,17 @@ __all__ = [
     "experiment_prefix",
     "latest_attempt_number",
     "load_shard_records",
+    "new_run_id",
     "next_attempt_path",
+    "run_prefix",
     "shard_prefix",
 ]
 
 _ATTEMPT_RE = re.compile(r"attempt-(\d{4})\.jsonl$")
+
+#: A run id is a path segment, so it must not contain one. Timestamp-plus-SHA
+#: fits comfortably; anything with a separator in it is a caller error.
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +64,38 @@ def experiment_prefix(experiment_id: str) -> str:
 def shard_prefix(spec: ShardSpec) -> str:
     """Directory holding one shard's attempt files and markers."""
     return f"{experiment_prefix(spec.experiment_id)}/shards/{spec.shard_id}"
+
+
+def new_run_id(code_version: str, now: datetime | None = None) -> str:
+    """Identity for one *execution* of an experiment.
+
+    ``experiment_id`` is stable so resume can find prior work, which means every
+    execution of the same experiment previously wrote its report, HTML and
+    figures over the last one's. ``hard-full-01`` ran three times and kept one
+    report. This gives each execution somewhere of its own.
+
+    Timestamp first so lexical order is time order — a bucket listing is then
+    chronological — and the commit after it so the folder says what produced it
+    without opening the manifest inside. Not the Vertex job id: a local run has
+    none, and the job id goes in the manifest instead.
+
+    ``now`` exists for the tests; nothing in the codebase passes it.
+    """
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{code_version}"
+
+
+def run_prefix(experiment_id: str, run_id: str) -> str:
+    """Root for one execution's derived artifacts — report, HTML, figures.
+
+    Under the experiment, not beside it: everything one experiment produced
+    stays in one listing, and the shard and merged prefixes are untouched so
+    resume keeps working.
+    """
+    if not _RUN_ID_RE.match(run_id):
+        msg = f"not a usable run id: {run_id!r}"
+        raise ValueError(msg)
+    return f"{experiment_prefix(experiment_id)}/runs/{run_id}"
 
 
 def latest_attempt_number(store: ArtifactStore, spec: ShardSpec) -> int:

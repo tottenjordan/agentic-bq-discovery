@@ -159,8 +159,9 @@ def _pipeline_parameters() -> set[str]:
     return set(bq_context_pipeline.component_spec.inputs or {})
 
 
-def _params_the_cli_sends(monkeypatch: pytest.MonkeyPatch) -> set[str]:
-    """Invoke `submit-pipeline` with the submit call stubbed, and capture the keys."""
+def _capture_parameters(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> dict[str, Any]:
+    """Invoke `submit-pipeline` with the submit call stubbed, and return the
+    `parameter_values` it would have sent to Vertex."""
     from typer.testing import CliRunner
 
     from bq_context import cli
@@ -173,11 +174,15 @@ def _params_the_cli_sends(monkeypatch: pytest.MonkeyPatch) -> set[str]:
         return _FakeJob()
 
     monkeypatch.setattr(submit_module, "submit_pipeline", _capture)
-    result = CliRunner().invoke(
-        cli.app, ["submit-pipeline", "-e", "t", "--image", "img:test", "--profile", "smoke"]
-    )
+    result = CliRunner().invoke(cli.app, argv)
     assert result.exit_code == 0, result.output
-    return set(seen["parameter_values"])
+    return seen["parameter_values"]
+
+
+def _params_the_cli_sends(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """The parameter *names* `submit-pipeline` sends."""
+    argv = ["submit-pipeline", "-e", "t", "--image", "img:test", "--profile", "smoke"]
+    return set(_capture_parameters(monkeypatch, argv))
 
 
 def test_every_pipeline_parameter_is_sent_or_deliberately_defaulted(
@@ -202,6 +207,18 @@ def test_the_cli_sends_no_parameter_the_pipeline_does_not_declare(
     """Vertex rejects an unknown parameter name at submit time, which costs a
     round trip to discover. A typo should fail in the suite instead."""
     assert _params_the_cli_sends(monkeypatch) <= _pipeline_parameters()
+
+
+def test_the_submission_carries_a_usable_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sending the empty default would put every execution back in one folder —
+    the overwriting this parameter exists to stop. It must also survive
+    `run_prefix`, which is what the exit task calls with it."""
+    from bq_context.runner.resume import run_prefix
+
+    sent = _capture_parameters(monkeypatch, ["submit-pipeline", "-e", "t", "--image", "img:test"])
+    run_id = sent["run_id"]
+    assert run_id, "submitted the compiled default; every run would share one folder"
+    assert run_prefix("t", run_id).endswith(f"/runs/{run_id}")
 
 
 def test_refresh_figures_is_reachable_from_the_command_line(

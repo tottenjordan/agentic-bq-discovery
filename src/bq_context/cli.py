@@ -1555,9 +1555,17 @@ def submit_pipeline_cmd(
     if not image:
         ensure_image(os.environ["BQ_CONTEXT_IMAGE"], sha)
 
+    # Minted here, once, and sent as a parameter. Generated inside the pipeline
+    # instead, every task would mint its own and the run's artifacts would land
+    # in as many folders as there are tasks that write one.
+    from bq_context.runner.resume import new_run_id  # noqa: PLC0415
+
+    run_id = new_run_id(sha)
+
     params = {
         "project": config.project,
         "experiment_id": experiment_id,
+        "run_id": run_id,
         "out": out,
         "code_version": sha,
         "service_account": service_account,

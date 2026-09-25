@@ -1,103 +1,147 @@
 {
   "questions": [
     {
-      "id": "gloss-cyclone",
+      "id": "cat-depression",
       "category": "single-table",
-      "question": "How many tropical cyclones intensified past depression strength in the Atlantic basin?",
+      "question": "How many systems originating over warm water were only ever classified as depressions?",
       "relevance": {
-        "must_have": ["hurricanes"],
+        "must_have": [
+          "hurricanes"
+        ],
         "nice_to_have": [],
-        "distractor": ["weather_stations"]
+        "distractor": [
+          "weather_stations"
+        ]
       }
     },
     {
-      "id": "gloss-landfall",
+      "id": "cat-landfall",
       "category": "single-table",
-      "question": "Which storms made landfall on the Gulf coast, and where did the centre cross the coastline?",
+      "question": "Which storms had their centre cross a coastline, and at what point did it happen?",
       "relevance": {
-        "must_have": ["hurricanes"],
+        "must_have": [
+          "hurricanes"
+        ],
         "nice_to_have": [],
-        "distractor": ["us_counties"]
+        "distractor": [
+          "us_counties"
+        ]
       }
     },
     {
-      "id": "gloss-gratuity",
+      "id": "cat-gratuity",
       "category": "single-table",
-      "question": "How large a gratuity do passengers add on top of the metered amount?",
+      "question": "How generous a gratuity does a passenger hand over on top of the metered charge?",
       "relevance": {
-        "must_have": ["nyc_taxi_trips_2022"],
+        "must_have": [
+          "nyc_taxi_trips_2022"
+        ],
         "nice_to_have": [],
-        "distractor": ["taxi_zone_geom"]
+        "distractor": [
+          "taxi_zone_geom"
+        ]
       }
     },
     {
-      "id": "gloss-walkup",
+      "id": "cat-walkup",
       "category": "single-table",
-      "question": "Do walk-up casual users take longer elapsed rides than annual members?",
+      "question": "Do walk-up casual users ride for longer than people on an annual membership?",
       "relevance": {
-        "must_have": ["austin_bikeshare_trips"],
+        "must_have": [
+          "austin_bikeshare_trips"
+        ],
         "nice_to_have": [],
-        "distractor": ["citibike_stations"]
+        "distractor": [
+          "citibike_stations"
+        ]
       }
     },
     {
-      "id": "gloss-ghcn",
+      "id": "cat-knots",
       "category": "single-table",
-      "question": "Which Global Historical Climatology Network observation sites report from Texas?",
+      "question": "Which rotating systems reported sustained surface winds above 100 knots?",
       "relevance": {
-        "must_have": ["weather_stations"],
+        "must_have": [
+          "hurricanes"
+        ],
         "nice_to_have": [],
-        "distractor": ["austin_bikeshare_stations"]
+        "distractor": [
+          "weather_stations"
+        ]
       }
     },
     {
-      "id": "gloss-natality-term",
+      "id": "cat-fips-join",
       "category": "single-table",
-      "question": "What are the live birth counts and associated maternal measures for each county?",
+      "question": "Report live infant measures against the Federal Information Processing Standards identifier for each area.",
       "relevance": {
-        "must_have": ["county_natality"],
-        "nice_to_have": [],
-        "distractor": ["usa_names_1910_current"]
+        "must_have": [
+          "county_natality"
+        ],
+        "nice_to_have": [
+          "us_counties"
+        ],
+        "distractor": [
+          "zip_codes"
+        ]
       }
     },
     {
-      "id": "guide-natality-geo",
+      "id": "cat-checkout",
+      "category": "single-table",
+      "question": "How many minutes elapse between checkout and return on each ride?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_trips"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "nyc_taxi_trips_2022"
+        ]
+      }
+    },
+    {
+      "id": "cat-kiosk-join",
       "category": "multi-table-related",
-      "question": "Map average birth weight by county, including each county's geographic boundary.",
+      "question": "Which named kiosks do the longest-elapsed rides get checked out from?",
       "relevance": {
-        "must_have": ["county_natality", "us_counties"],
-        "nice_to_have": ["zip_codes"],
-        "distractor": ["population_by_zip_2010"]
-      }
-    },
-    {
-      "id": "guide-dock-join",
-      "category": "multi-table-related",
-      "question": "Which named docking kiosks do the longest-elapsed rides start from?",
-      "relevance": {
-        "must_have": ["austin_bikeshare_trips", "austin_bikeshare_stations"],
+        "must_have": [
+          "austin_bikeshare_trips",
+          "austin_bikeshare_stations"
+        ],
         "nice_to_have": [],
-        "distractor": ["citibike_stations"]
+        "distractor": [
+          "citibike_stations"
+        ]
       }
     },
     {
-      "id": "prof-network-size",
-      "category": "multi-table-related",
-      "question": "Which of the two bike docking networks has more than a thousand kiosks in it?",
+      "id": "cat-kiosk",
+      "category": "single-table",
+      "question": "Where are the physical kiosks that cycles get checked out from and returned to?",
       "relevance": {
-        "must_have": ["citibike_stations"],
-        "nice_to_have": ["austin_bikeshare_stations"],
-        "distractor": ["austin_bikeshare_trips"]
+        "must_have": [
+          "austin_bikeshare_stations"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "citibike_stations"
+        ]
       }
     },
     {
-      "id": "prof-pollutant-coverage",
+      "id": "cat-concentration",
       "category": "multi-table-disparate",
-      "question": "Which pollutant is measured at the most monitoring sites, and how does coverage compare with the weather observation network?",
+      "question": "How do yearly summarized concentrations compare against the elapsed ride minutes in the same city?",
       "relevance": {
-        "must_have": ["air_quality_annual_summary", "weather_stations"],
+        "must_have": [
+          "air_quality_annual_summary",
+          "austin_bikeshare_trips"
+        ],
         "nice_to_have": [],
-        "distractor": ["us_counties"]
+        "distractor": [
+          "weather_stations"
+        ]
       }
     },
     {
@@ -105,9 +149,15 @@
       "category": "single-table",
       "question": "What are the busiest bike share stations in Austin by month?",
       "relevance": {
-        "must_have": ["austin_bikeshare_trips"],
-        "nice_to_have": ["austin_bikeshare_stations"],
-        "distractor": ["citibike_stations"]
+        "must_have": [
+          "austin_bikeshare_trips"
+        ],
+        "nice_to_have": [
+          "austin_bikeshare_stations"
+        ],
+        "distractor": [
+          "citibike_stations"
+        ]
       }
     },
     {
@@ -115,9 +165,15 @@
       "category": "trap",
       "question": "Which Citi Bike docking kiosks in Austin see the heaviest use?",
       "relevance": {
-        "must_have": ["austin_bikeshare_stations"],
-        "nice_to_have": ["austin_bikeshare_trips"],
-        "distractor": ["citibike_stations"]
+        "must_have": [
+          "austin_bikeshare_stations"
+        ],
+        "nice_to_have": [
+          "austin_bikeshare_trips"
+        ],
+        "distractor": [
+          "citibike_stations"
+        ]
       }
     }
   ]

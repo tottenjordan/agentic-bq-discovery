@@ -292,13 +292,26 @@ def render_html(  # noqa: PLR0913 - each argument is a distinct source the repor
     return "\n".join(parts)
 
 
+#: Below this, an early/late split is two or three cells a side and the means
+#: are noise. A tier with so few search cells is not evidence either way.
+_MIN_CELLS_TO_SPLIT = 8
+
+
 def convergence_from_cells(cells: list[dict]) -> list[str]:
     """Detect the index warm-up confound from the run's own cells.
 
-    `assess_search_convergence` normally probes one fixed question live. Here the
-    evidence is already in the data: `search_stats.raw_search_count` per tier, on
-    a corpus that is identical across tiers. A converged index returns the same
-    count everywhere; a rising count is the warm-up signature.
+    `assess_search_convergence` needs two observations separated in time.
+    Preflight gets them by probing twice; here they come from the run itself —
+    each tier's cells are split by `written_at` into the half written first and
+    the half written last, and the mean `raw_search_count` compared. A tier whose
+    own search results changed while the sweep was running is the warm-up
+    signature, and it is the one confound this project has hit twice.
+
+    **The previous version could not fire at all.** It computed one mean per tier
+    and passed it as `first` with no `second`, and the guard returns `[]` unless
+    it has two observations. It reported a clean bill on every run ever rendered,
+    including `full-01`, whose tier comparison was invalid for exactly this
+    reason.
 
     Deriving it from the cells rather than re-probing means a report rendered
     months later still carries the caveat, instead of silently dropping it
@@ -306,12 +319,21 @@ def convergence_from_cells(cells: list[dict]) -> list[str]:
     """
     from bq_context.cli import assess_search_convergence  # noqa: PLC0415 - avoids a cycle
 
-    totals: dict[int, list[int]] = {}
+    by_tier: dict[int, list[tuple[str, int]]] = {}
     for cell in cells:
         stats = cell.get("search_stats") or {}
         if "raw_search_count" in stats:
-            totals.setdefault(int(cell["tier"]), []).append(int(stats["raw_search_count"]))
-    if len(totals) < 2:  # noqa: PLR2004 - one tier is not a comparison
-        return []
-    means = {tier: round(sum(v) / len(v)) for tier, v in totals.items() if v}
-    return assess_search_convergence(means)
+            by_tier.setdefault(int(cell["tier"]), []).append(
+                (str(cell.get("written_at", "")), int(stats["raw_search_count"]))
+            )
+
+    early: dict[str, object] = {}
+    late: dict[str, object] = {}
+    for tier, rows in by_tier.items():
+        if len(rows) < _MIN_CELLS_TO_SPLIT:
+            continue
+        rows.sort()
+        half = len(rows) // 2
+        early[f"tier{tier}"] = round(sum(n for _, n in rows[:half]) / half)
+        late[f"tier{tier}"] = round(sum(n for _, n in rows[half:]) / (len(rows) - half))
+    return assess_search_convergence(early, late)

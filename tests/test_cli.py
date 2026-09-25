@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
+from bq_context import cli
 from bq_context.cli import (
     REQUIRED_PERMISSIONS,
     _credentials,
@@ -30,6 +31,7 @@ from bq_context.runner.resume import shard_prefix
 from bq_context.runner.store import LocalStore
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 runner = CliRunner()
@@ -568,17 +570,17 @@ def test_user_credentials_resolve_to_nothing_rather_than_the_vm_sa() -> None:
 # old rule reported it as a broken index on every run.
 # ---------------------------------------------------------------------------
 def test_a_stable_index_produces_no_warning() -> None:
-    stable = {0: 3, 1: 3, 2: 3, 3: 4}
+    stable = {"tier0": 3, "tier1": 3, "tier2": 3, "tier3": 4}
     assert assess_search_convergence(stable, dict(stable)) == []
 
 
 def test_tier_differences_alone_are_never_a_warning() -> None:
     """THE regression. This shape occurs on the live corpus every run, and it is
     enrichment working rather than a fault."""
-    observed = {0: 3, 1: 3, 2: 3, 3: 4}
+    observed = {"tier0": 3, "tier1": 3, "tier2": 3, "tier3": 4}
     assert assess_search_convergence(observed, dict(observed)) == []
     # Even a large spread, if it is not moving, is a measurement not drift.
-    big = {0: 2, 1: 4, 2: 6, 3: 9}
+    big = {"tier0": 2, "tier1": 4, "tier2": 6, "tier3": 9}
     assert assess_search_convergence(big, dict(big)) == []
 
 
@@ -591,7 +593,7 @@ def test_a_moving_index_is_caught() -> None:
     order and the index was still warming, so tier was confounded with elapsed
     time. Re-running hours later gave an identical 0.967 everywhere.
     """
-    warnings = assess_search_convergence({0: 2, 1: 3, 2: 3, 3: 4}, {0: 3, 1: 3, 2: 3, 3: 4})
+    warnings = assess_search_convergence({"tier0": 2, "tier1": 3}, {"tier0": 3, "tier1": 3})
     assert len(warnings) == 1
     assert "tier0: 2 -> 3" in warnings[0]
     assert "confounded with elapsed time" in warnings[0]
@@ -600,18 +602,18 @@ def test_a_moving_index_is_caught() -> None:
 def test_drift_that_is_uniform_across_tiers_is_still_caught() -> None:
     """The old cross-tier rule was blind to this: every tier moving by the same
     amount left the spread unchanged and looked converged."""
-    assert len(assess_search_convergence({0: 3, 1: 3, 2: 3, 3: 4}, {0: 5, 1: 5, 2: 5, 3: 6})) == 1
+    assert len(assess_search_convergence({"tier0": 3, "tier1": 4}, {"tier0": 5, "tier1": 6})) == 1
 
 
 def test_one_observation_cannot_assess_anything() -> None:
-    assert assess_search_convergence({0: 3, 1: 3, 2: 3, 3: 4}) == []
-    assert assess_search_convergence({0: 3}, None) == []
+    assert assess_search_convergence({"tier0": 3}) == []
+    assert assess_search_convergence({"tier0": 3}, None) == []
     assert assess_search_convergence({}, {}) == []
 
 
 def test_only_tiers_present_in_both_are_compared() -> None:
     """A tier missing from one pass is not evidence of drift."""
-    assert assess_search_convergence({0: 3, 1: 4}, {0: 3}) == []
+    assert assess_search_convergence({"tier0": 3, "tier1": 4}, {"tier0": 3}) == []
 
 
 def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -626,19 +628,29 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
     from bq_context import cli
     from bq_context.context_cache import TableCache
 
+    # One element per search, holding which probe pass it belongs to. The search
+    # function is bound once and reused across both passes, so counting bindings
+    # would report one.
     calls: list[int] = []
+    seen: dict[tuple[int, str], int] = {}
 
-    def _probe(_config: object, tiers: list[int]) -> dict[int, int]:
-        calls.append(1)
-        # Second pass differs: the index moved while preflight was running.
-        return {t: 3 + (len(calls) - 1) for t in tiers}
+    def _live(_config: object) -> Callable[[int, str], list]:
+        def _search(tier: int, question: str) -> list:
+            key = (tier, question)
+            seen[key] = seen.get(key, 0) + 1
+            calls.append(seen[key])
+            # The second pass returns a different table: the index moved while
+            # preflight was running.
+            return [_Hit("p.d.hurricanes" if seen[key] == 1 else "p.d.zip_codes")]
 
+        return _search
+
+    monkeypatch.setattr(cli, "_live_search", _live)
     monkeypatch.setattr(cli, "_credentials", lambda _: None)
     # Without this the test is not hermetic: `_effective_identity(None)` resolves
     # Application Default Credentials, which pass on a developer box and raise
     # DefaultCredentialsError in CI — where it failed, having passed locally.
     monkeypatch.setattr(cli, "_effective_identity", lambda _: "sa@test-project.iam")
-    monkeypatch.setattr(cli, "_search_hits_by_tier", _probe)
     monkeypatch.setattr(
         cli,
         "_tier_profile",
@@ -668,7 +680,7 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
     )
 
     result = runner.invoke(app, ["preflight", "--tier", "1", "--baseline", "0", "--settle", "1"])
-    assert len(calls) == 2, f"expected two probes, got {len(calls)}"
+    assert set(calls) == {1, 2}, f"expected two probe passes, saw {sorted(set(calls))}"
     assert "second pass" in result.output
     assert "confounded with elapsed time" in result.output
 
@@ -741,3 +753,77 @@ def test_run_shard_exits_zero_when_the_shard_is_clean(monkeypatch: pytest.Monkey
         app, ["run-shard", "-e", "e", "--tier", "1", "--approach", "search_direct", "--limit", "1"]
     )
     assert result.exit_code == 0, result.output
+
+
+class _Hit:
+    """Stand-in for discovery_common.SearchHit; only table_id is read here."""
+
+    def __init__(self, table_id: str) -> None:
+        self.table_id = table_id
+
+
+# ---------------------------------------------------------------------------
+# The convergence probe must use the questions that will actually be asked
+#
+# `enrich-probe-01` is why. Its 12 questions were novel, and tier-0 search
+# recall measured 0.292 during the run and 0.625 forty minutes later -- same
+# code, same corpus. The guard reported a settled index throughout, because it
+# probed with one hard-coded question that happened to be `single-q1`: asked
+# thousands of times across every previous run, and therefore maximally warm.
+#
+# A warm fixed probe says nothing about a cold novel query.
+# ---------------------------------------------------------------------------
+def test_the_probe_covers_every_question_in_every_tier() -> None:
+    """One cold question is enough to invalidate a sweep, so sampling will not
+    do — and probing everything doubles as the warm-up pass."""
+    seen: list[tuple[int, str]] = []
+    questions = {"q1": {"question": "a"}, "q2": {"question": "b"}}
+
+    def _search(tier: int, question: str) -> list:
+        seen.append((tier, question))
+        return []
+
+    labels = cli._probe_search_labels(questions, [0, 3], _search)
+    assert {t for t, _ in seen} == {0, 3}
+    assert {q for _, q in seen} == {"a", "b"}
+    assert set(labels) == {"tier0/q1", "tier0/q2", "tier3/q1", "tier3/q2"}
+
+
+def test_the_probe_records_which_tables_came_back_not_just_how_many() -> None:
+    """A count can hold still while the identities change underneath it. Recall
+    depends on identity, so that is what has to be compared."""
+
+    def _search(_tier: int, _question: str) -> list:
+        return [_Hit("p.d.hurricanes"), _Hit("p.d.zip_codes")]
+
+    labels = cli._probe_search_labels({"q1": {"question": "a"}}, [0], _search)
+    assert labels["tier0/q1"] == ("hurricanes", "zip_codes")
+
+
+def test_swapped_results_with_an_identical_count_are_caught() -> None:
+    """THE gap this closes. `cat-landfall` at tier 0 returned two wrong tables
+    during the run and the right one afterwards. A count-only guard can miss
+    that entirely; comparing identities cannot."""
+    first = {"tier0/cat-landfall": ("air_quality_annual_summary", "zip_codes")}
+    second = {"tier0/cat-landfall": ("hurricanes", "us_counties")}
+    warnings = assess_search_convergence(first, second)
+
+    assert len(warnings) == 1
+    assert "tier0/cat-landfall" in warnings[0]
+
+
+def test_a_settled_question_set_produces_no_warning() -> None:
+    settled = {"tier0/q1": ("hurricanes",), "tier3/q1": ("hurricanes", "us_counties")}
+    assert assess_search_convergence(settled, dict(settled)) == []
+
+
+def test_the_warning_names_the_question_so_it_can_be_acted_on() -> None:
+    """ "The index moved" is not actionable. "cat-landfall at tier 0 moved" tells
+    you which cell to distrust."""
+    warnings = assess_search_convergence(
+        {"tier0/cat-kiosk": (), "tier0/cat-knots": ("hurricanes",)},
+        {"tier0/cat-kiosk": ("austin_bikeshare_stations",), "tier0/cat-knots": ("hurricanes",)},
+    )
+    assert len(warnings) == 1
+    assert "cat-kiosk" in warnings[0]
+    assert "cat-knots" not in warnings[0], "a settled question must not be named"

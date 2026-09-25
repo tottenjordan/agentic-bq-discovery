@@ -1,4 +1,5 @@
-.PHONY: help install lint format test check clean image image-ref require-project
+.PHONY: help install lint format test check clean image image-ref require-project \
+	identity-watch identity-watch-logs identity-watch-down
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -39,6 +40,17 @@ image: require-project ## Build, verify, and push the runner image to Artifact R
 image-ref: require-project ## Print the image reference for the current commit
 	@echo $(IMAGE_REPO):$$(git rev-parse --short HEAD)
 
+
+# Daily check that the pipeline SA's semantic search still differs from a
+# long-standing principal's. See docs/notes/search-depends-on-identity.md.
+identity-watch: require-project ## Deploy the daily search-identity check (Cloud Run job + Scheduler)
+	GOOGLE_CLOUD_PROJECT=$(GOOGLE_CLOUD_PROJECT) REGION=$(REGION) scripts/identity-watch.sh deploy
+
+identity-watch-logs: require-project ## Show every daily search-identity result so far
+	@GOOGLE_CLOUD_PROJECT=$(GOOGLE_CLOUD_PROJECT) REGION=$(REGION) scripts/identity-watch.sh logs
+
+identity-watch-down: require-project ## Remove the check, its schedule, and its grant
+	GOOGLE_CLOUD_PROJECT=$(GOOGLE_CLOUD_PROJECT) REGION=$(REGION) scripts/identity-watch.sh down
 
 clean: ## Remove caches and build artifacts
 	rm -rf .ruff_cache .pytest_cache .ty_cache .coverage htmlcov dist build

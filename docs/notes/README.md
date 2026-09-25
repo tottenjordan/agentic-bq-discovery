@@ -35,7 +35,7 @@ notes.
 - [Search depends on identity](search-depends-on-identity.md) — semantic search returns
   **different tables to different principals**: new ones (the pipeline SA) see a degraded
   index regardless of grants, even Owner. Local re-runs cannot check pipeline numbers; re-indexing
-  does not heal it; `preflight --impersonate` now warns.
+  does not heal it; `preflight --impersonate` now warns, and `make identity-watch` checks daily.
 
 - [Why the tier response is flat](enrichment-dependent-questions.md) — tier 0 has no headroom
   (0.94-1.00 recall), and the corpus descriptions already pre-empt the glossary. The

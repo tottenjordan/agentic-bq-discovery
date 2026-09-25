@@ -118,6 +118,42 @@ An unknown principal never warns, so the one mix that matters would have been
 invisible. `""` still means unknown (cells from before the field existed, or a
 lookup that failed), and it is never counted as a second principal.
 
+## Watching for a heal
+
+The open question is whether a new principal's semantic view improves with age.
+The pipeline SA was three days old when this was found. A Cloud Run job answers
+it once a day, independent of any laptop or session:
+
+```bash
+make identity-watch        # deploy: Cloud Run job + daily Cloud Scheduler trigger
+make identity-watch-logs   # every result so far; a shrinking "N of 48" is a heal
+make identity-watch-down   # remove the job, the schedule, and the grant
+```
+
+**The job's own identity is the baseline.** Preflight compares the impersonated
+pipeline SA with whoever runs the job, so the job runs as the default compute
+SA. That account matched the developer 12/12. A freshly created SA would
+likely share the pipeline SA's degraded view, and the two would agree. The
+check would then report a heal that never happened.
+
+First data points, enrichment set, same 48 pairs:
+
+| when (UTC) | from | differing pairs |
+|---|---|---|
+| 2026-09-25 morning | laptop | 9 of 48 |
+| 2026-09-25 18:00 | the job (compute SA baseline) | 6 of 48 |
+| 2026-09-25 18:02 | laptop (ADC baseline) | 6 of 48, same pairs |
+
+The two baselines agree, so the job measures what the laptop does. The drop
+from 9 to 6 is real but unexplained. The SA is older, and the afternoon's label
+and description re-indexing may have caught up late. Tier 0 is the only tier
+that differs.
+
+The only grant it adds is `serviceAccountTokenCreator` for the compute SA,
+on the pipeline SA only, and `down` removes it. `tests/test_identity_watch.py`
+keeps the script in step with the CLI: its flags, its log query, and the config
+it forwards.
+
 ## Reproducing
 
 ```bash

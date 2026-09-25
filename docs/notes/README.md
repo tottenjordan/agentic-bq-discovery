@@ -27,6 +27,10 @@ notes.
   comparison discriminate (kc_context loses 6.3 points to its own reranker) while the **tier**
   comparison stayed flat; plus the two bugs only a real run exposed.
 
+- [The tier response is not flat](enrichment-probe-results.md) — **the first non-null enrichment
+  result.** Search-based approaches go 0.292 -> 0.875 across tiers; context-reading approaches
+  stay at ceiling. The gain comes from profiling and guidelines, not the glossary.
+
 - [Why the tier response is flat](enrichment-dependent-questions.md) — tier 0 has no headroom
   (0.94-1.00 recall), and the corpus descriptions already pre-empt the glossary. The
   enrichment-dependent question set that probes it, and why it measures a ceiling rather than

@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bq_context.scoring.executive import SATURATION, findings, render_html, usable_conclusions
+from bq_context.scoring.executive import (
+    SATURATION,
+    convergence_from_cells,
+    findings,
+    render_html,
+    usable_conclusions,
+)
 from bq_context.scoring.metrics import CellScore
 
 if TYPE_CHECKING:
@@ -217,3 +223,62 @@ def test_the_experiment_id_is_escaped() -> None:
 def test_a_single_tier_run_omits_the_enrichment_table() -> None:
     doc = render_html([cell("kc_search", 3, 0.9)], experiment_id="e")
     assert "Enrichment response" not in doc
+
+
+# ---------------------------------------------------------------------------
+# Detecting the warm-up confound from a run's own cells
+#
+# The previous version of `convergence_from_cells` could not fire. It built one
+# mean per tier and passed it as `first` with no `second`, and the guard returns
+# [] unless it has two observations to compare. It reported a clean bill on
+# every report ever rendered -- including full-01, whose tier comparison was
+# invalid for exactly this reason. It had no tests, which is how that survived.
+# ---------------------------------------------------------------------------
+def _cell(tier: int, when: str, hits: int) -> dict:
+    return {"tier": tier, "written_at": when, "search_stats": {"raw_search_count": hits}}
+
+
+def _steady(tier: int, hits: int, n: int = 12) -> list[dict]:
+    return [_cell(tier, f"2026-09-25T00:{i:02d}:00", hits) for i in range(n)]
+
+
+def test_a_settled_run_reports_nothing() -> None:
+    cells = _steady(0, 3) + _steady(3, 4)
+    assert convergence_from_cells(cells) == []
+
+
+def test_a_tier_that_moved_during_the_run_is_caught() -> None:
+    """THE case. Search results climbing while the sweep progresses is tier
+    confounded with elapsed time, which is what invalidated full-01."""
+    early = [_cell(0, f"2026-09-25T00:{i:02d}:00", 1) for i in range(6)]
+    late = [_cell(0, f"2026-09-25T01:{i:02d}:00", 5) for i in range(6)]
+    warnings = convergence_from_cells(early + late + _steady(3, 4))
+
+    assert len(warnings) == 1
+    assert "tier0" in warnings[0]
+    assert "confounded with elapsed time" in warnings[0]
+
+
+def test_tier_differences_are_not_drift() -> None:
+    """Tiers legitimately differ — that is the independent variable. Only a tier
+    moving against *itself* is evidence of a warming index."""
+    assert convergence_from_cells(_steady(0, 2) + _steady(1, 5) + _steady(3, 9)) == []
+
+
+def test_ordering_is_by_write_time_not_file_order() -> None:
+    """Cells arrive merged from 24 shards, so list order is not time order."""
+    early = [_cell(0, f"2026-09-25T00:{i:02d}:00", 1) for i in range(6)]
+    late = [_cell(0, f"2026-09-25T01:{i:02d}:00", 5) for i in range(6)]
+    shuffled = [c for pair in zip(late, early, strict=True) for c in pair]
+    assert convergence_from_cells(shuffled)
+
+
+def test_too_few_cells_to_split_is_not_evidence() -> None:
+    """Three cells a side is noise, and a guard that cries wolf gets ignored."""
+    assert convergence_from_cells(_steady(0, 1, n=4) + _steady(0, 9, n=2)) == []
+
+
+def test_cells_without_search_stats_are_ignored() -> None:
+    """Only the three search approaches record `raw_search_count`; bq_tools and
+    the capsule approaches never search."""
+    assert convergence_from_cells([{"tier": 0, "written_at": "x"}] * 20) == []

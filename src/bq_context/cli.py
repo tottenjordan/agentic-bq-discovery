@@ -33,6 +33,8 @@ from bq_context.runner.planner import order_shards
 from bq_context.runner.store import store_for
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+
     from google.auth.credentials import Credentials
 
     from bq_context.context_cache import TableCache
@@ -263,32 +265,76 @@ _SEARCH_SPREAD_MIN_GAP = 2
 #: rewriting catalog entries, negligible against a sweep measured in hours.
 _SETTLE_SECONDS = 45
 
-#: A question whose answer table exists identically in every tier.
-_CONVERGENCE_PROBE = "What are the busiest bike share stations in Austin by month?"
 
+def _probe_search_labels(
+    questions: Mapping[str, Mapping[str, Any]],
+    tiers: Sequence[int],
+    search: Callable[[int, str], Sequence[Any]],
+) -> dict[str, tuple[str, ...]]:
+    """What semantic search returns for every question, in every tier.
 
-def _search_hits_by_tier(config: ExperimentConfig, tiers: list[int]) -> dict[int, int]:
-    """Raw semantic-search hit count per tier for one fixed question.
+    Keyed ``tier{n}/{question_id}`` and valued by the *table names* returned,
+    sorted. Two properties matter and both were learned the hard way.
 
-    The corpus is identical across tiers, so a converged index returns the same
-    count everywhere. A rising count is the signature of an index still warming
-    after provisioning.
+    **Every question, not one fixed probe.** The old version asked a single
+    hard-coded question — which happened to be `single-q1`, asked thousands of
+    times across every prior run and therefore maximally warm. It reported a
+    settled index all through `enrich-probe-01`, whose novel questions measured
+    tier-0 recall at 0.292 during the run and 0.625 forty minutes later. A warm
+    fixed probe says nothing about a cold novel query.
+
+    **Identities, not counts.** `cat-landfall` at tier 0 returned two tables
+    during that run and one afterwards, and a different one at that; a guard
+    watching only the count can miss a straight swap. Recall depends on which
+    tables came back, so that is what gets compared.
+
+    Sorted, so a pure re-ranking is not reported as drift. Rank order does affect
+    nDCG and this deliberately does not cover it — a guard that fires on every
+    reshuffle is a guard people learn to ignore.
+
+    ``search`` is injected so this is testable without a catalog.
     """
+    labels: dict[str, tuple[str, ...]] = {}
+    for tier in tiers:
+        for qid, question in questions.items():
+            hits = search(tier, str(question.get("question", "")))
+            labels[f"tier{tier}/{qid}"] = tuple(sorted(h.table_id.rsplit(".", 1)[-1] for h in hits))
+    return labels
+
+
+def _probe_summary(labels: Mapping[str, tuple[str, ...]], tiers: Sequence[int]) -> str:
+    """One line per tier: how many questions found anything, and total hits.
+
+    ``found`` is the number that matters. A question returning nothing at a tier
+    scores zero recall there for all three search approaches, so a low count is
+    the tier response before any agent runs — and a count that climbs between the
+    two passes is the index still warming.
+    """
+    parts = []
+    for tier in tiers:
+        vals = [v for k, v in labels.items() if k.startswith(f"tier{tier}/")]
+        found = sum(1 for v in vals if v)
+        parts.append(f"tier{tier}={found}/{len(vals)}")
+    return "search found/tier  " + "  ".join(parts)
+
+
+def _live_search(config: ExperimentConfig) -> Callable[[int, str], Sequence[Any]]:
+    """Bind a tier-scoped semantic search against the live catalog."""
     from bq_context.context_cache import TableCache  # noqa: PLC0415
     from bq_context.discovery_common import search_entries_scoped  # noqa: PLC0415
     from bq_context.runtime import TierContext, tier_scope  # noqa: PLC0415
 
-    hits: dict[int, int] = {}
-    for tier in tiers:
+    def _search(tier: int, question: str) -> Sequence[Any]:
         ctx = TierContext.build(config, tier, TableCache.empty())
         with tier_scope(ctx):
-            _, stats = search_entries_scoped(_CONVERGENCE_PROBE)
-        hits[tier] = int(stats["raw_search_count"])
-    return hits
+            hits, _ = search_entries_scoped(question)
+        return hits
+
+    return _search
 
 
 def assess_search_convergence(
-    first: dict[int, int], second: dict[int, int] | None = None
+    first: Mapping[str, object], second: Mapping[str, object] | None = None
 ) -> list[str]:
     """Warn when the Dataplex semantic index is still changing.
 
@@ -321,13 +367,13 @@ def assess_search_convergence(
     if not second:
         return []
     moved = {
-        tier: (first[tier], second[tier])
-        for tier in sorted(set(first) & set(second))
-        if first[tier] != second[tier]
+        label: (first[label], second[label])
+        for label in sorted(set(first) & set(second), key=str)
+        if first[label] != second[label]
     }
     if not moved:
         return []
-    detail = ", ".join(f"tier{t}: {a} -> {b}" for t, (a, b) in moved.items())
+    detail = ", ".join(f"{label}: {a} -> {b}" for label, (a, b) in moved.items())
     return [
         (
             f"semantic search hit counts changed while preflight was running "
@@ -1034,10 +1080,13 @@ def preflight(
     problems, warnings = assess_ladder(ladder, empty=len(caches[tier]) == 0)
 
     if len(caches) > 1:
-        probe = _search_hits_by_tier(config, sorted(caches))
-        typer.echo(
-            "search hits/tier  " + "  ".join(f"tier{t}={n}" for t, n in sorted(probe.items()))
-        )
+        search = _live_search(config)
+        # The shipped set, which is what a sweep runs today. Once `--questions`
+        # lands, this takes whatever the submitter chose -- which is the whole
+        # point, since a user-supplied set is exactly the cold one.
+        questions = _load_questions(DEFAULT_QUESTIONS)
+        probe = _probe_search_labels(questions, sorted(caches), search)
+        typer.echo(_probe_summary(probe, sorted(caches)))
         # Twice, separated in time. One observation cannot distinguish a moving
         # index from enrichment doing its job — see assess_search_convergence.
         if settle:
@@ -1045,12 +1094,8 @@ def preflight(
 
             typer.echo(f"re-probing in {settle}s to check the index is not still moving")
             time.sleep(settle)
-            again = _search_hits_by_tier(config, sorted(caches))
-            typer.echo(
-                "search hits/tier  "
-                + "  ".join(f"tier{t}={n}" for t, n in sorted(again.items()))
-                + "  (second pass)"
-            )
+            again = _probe_search_labels(questions, sorted(caches), search)
+            typer.echo(_probe_summary(again, sorted(caches)) + "  (second pass)")
             warnings.extend(assess_search_convergence(probe, again))
 
     for warning in warnings:

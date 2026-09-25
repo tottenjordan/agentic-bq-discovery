@@ -23,6 +23,8 @@ from bq_context.pipeline.publish import (
     publish_report,
     run_manifest,
     run_preflight,
+    run_questions,
+    snapshot_questions_uri,
 )
 from bq_context.runner.store import LocalStore
 from bq_context.scoring.merge import missing_path
@@ -140,6 +142,7 @@ def _manifest(**overrides: object) -> dict:
         "question_limit": 0,
         "report": {"expected": 3000, "present": 3000, "missing_count": 0, "missing": []},
         "corpus": {"fingerprint": "13f9fcb4", "ladder": []},
+        "questions": {"fingerprint": "a1b2c3d4", "count": 25},
         "environ": {"RESOURCE_PREFIX": "bigquery_context_hard", "CORPUS_PROFILE": "hard"},
     }
     kwargs.update(overrides)
@@ -300,3 +303,77 @@ def test_no_limit_flag_when_unset() -> None:
 @pytest.mark.parametrize("flag", ["--experiment-id", "--out", "--runs"])
 def test_the_required_flags_are_present(flag: str) -> None:
     assert flag in merge_args("e", "gs://b", runs=5, tiers=[0], approaches=["a"])
+
+
+# ---------------------------------------------------------------------------
+# merge must score the questions the sweep actually ran
+#
+# `merge` computes expected cells from a question set. If the shards ran a
+# custom set and the exit task uses the image's baked-in 25, every real cell is
+# "unexpected" and every built-in question is "missing" -- so `require_complete`
+# fails a run that is perfectly healthy. `merge_args` already carries this exact
+# warning for `question_limit`.
+# ---------------------------------------------------------------------------
+def test_merge_reads_the_snapshot_when_the_sweep_had_one(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text("experiments/byoq/questions.json", "{}")
+
+    uri = snapshot_questions_uri(store, "byoq")
+    assert uri.endswith("experiments/byoq/questions.json")
+    assert "--questions" in merge_args(
+        "byoq", "out", runs=1, tiers=[3], approaches=["a"], questions=uri
+    )
+
+
+def test_merge_falls_back_to_the_packaged_set_for_an_old_experiment(tmp_path: Path) -> None:
+    """`full-01` and `hard-full-01` predate the snapshot. Nothing migrates them,
+    so `merge` and `score` against them must keep working untouched."""
+    assert snapshot_questions_uri(LocalStore(tmp_path), "full-01") == ""
+    assert "--questions" not in merge_args("full-01", "out", runs=5, tiers=[0], approaches=["a"])
+
+
+def test_the_questions_flag_carries_the_uri() -> None:
+    args = merge_args(
+        "e", "out", runs=1, tiers=[3], approaches=["a"], questions="gs://b/e/questions.json"
+    )
+    assert args[args.index("--questions") + 1] == "gs://b/e/questions.json"
+
+
+def test_the_manifest_records_the_question_set() -> None:
+    """A run folder should say what was *asked* as well as what was measured.
+    Without it, two runs with identical corpus and commit are indistinguishable
+    even when they answered different questions."""
+    manifest = _manifest(questions={"fingerprint": "a1b2c3d4", "count": 25})
+    assert manifest["questions_fingerprint"] == "a1b2c3d4"
+    assert manifest["question_count"] == 25
+
+
+def test_a_manifest_with_no_question_record_still_writes() -> None:
+    """The exit task must publish on a run where the snapshot never landed."""
+    manifest = _manifest(questions={})
+    assert manifest["questions_fingerprint"] == ""
+    assert manifest["question_count"] == 0
+
+
+def test_the_question_record_is_read_back_from_the_snapshot(tmp_path: Path) -> None:
+    from bq_context.runner.planner import questions_fingerprint
+
+    store = LocalStore(tmp_path)
+    questions = [{"id": "mine-q1", "category": "c", "question": "t", "relevance": {}}]
+    store.write_text("experiments/e/questions.json", json.dumps({"questions": questions}))
+
+    record = run_questions(store, "e")
+    assert record["count"] == 1
+    assert record["fingerprint"] == questions_fingerprint({"mine-q1": questions[0]})
+
+
+def test_an_experiment_with_no_snapshot_reports_zero_questions(tmp_path: Path) -> None:
+    """True of `full-01`, which predates snapshots. Unknown, not a crash — the
+    exit task has to publish a manifest for it too."""
+    assert run_questions(LocalStore(tmp_path), "full-01") == {"fingerprint": "", "count": 0}
+
+
+def test_a_torn_snapshot_does_not_lose_the_manifest(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    store.write_text("experiments/e/questions.json", "{not json")
+    assert run_questions(store, "e")["count"] == 0

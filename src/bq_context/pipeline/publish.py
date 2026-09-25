@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from bq_context.runner.resume import run_prefix
+from bq_context.runner.resume import experiment_prefix, run_prefix
 from bq_context.scoring.merge import missing_path
 
 if TYPE_CHECKING:
@@ -126,6 +126,26 @@ def effective_env(environ: Mapping[str, str]) -> dict[str, str]:
     return resolved
 
 
+def run_questions(store: ArtifactStore, experiment_id: str) -> dict[str, Any]:
+    """The question set this sweep ran, as the manifest wants it. Never raises.
+
+    Read back from the snapshot rather than taken as a pipeline parameter, for
+    the same reason the corpus fingerprint is: ``finalize`` is an exit task and
+    must not depend on anything that is allowed to fail. An old experiment with
+    no snapshot reports zeroes, which is true of it.
+    """
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+
+    try:
+        raw = json.loads(store.read_text(f"{experiment_prefix(experiment_id)}/questions.json"))
+        items = raw["questions"] if isinstance(raw, dict) else raw
+        loaded = {str(q["id"]): q for q in items}
+    except Exception:  # noqa: BLE001 - a missing snapshot must not lose the manifest
+        logger.warning("No question snapshot for %s; recording it as unknown", experiment_id)
+        return {"fingerprint": "", "count": 0}
+    return {"fingerprint": questions_fingerprint(loaded), "count": len(loaded)}
+
+
 def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
     # them into a dataclass would add a type used at one call site and hide none
     # of the coupling.
@@ -140,6 +160,7 @@ def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
     question_limit: int,
     report: Mapping[str, Any],
     corpus: Mapping[str, Any],
+    questions: Mapping[str, Any],
     environ: Mapping[str, str],
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -158,6 +179,8 @@ def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
         "code_version": code_version,
         "pipeline_job": pipeline_job,
         "corpus_fingerprint": corpus.get("fingerprint", ""),
+        "questions_fingerprint": questions.get("fingerprint", ""),
+        "question_count": questions.get("count", 0),
         "resource_prefix": environ.get("RESOURCE_PREFIX", ""),
         "corpus_profile": environ.get("CORPUS_PROFILE", ""),
         "agent_model": environ.get("AGENT_MODEL", ""),
@@ -195,7 +218,22 @@ def merge_report(store: ArtifactStore, experiment_id: str) -> dict[str, Any]:
         return dict(EMPTY_REPORT)
 
 
-def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a dataclass
+def snapshot_questions_uri(store: ArtifactStore, experiment_id: str) -> str:
+    """The sweep's question snapshot, or ``""`` if it predates them.
+
+    Separate from ``merge_args`` so that one stays pure and testable without a
+    store, and so ``finalize`` can call it as an argument expression — that
+    function is at its statement limit and has no room for a lookup.
+
+    The empty return is the backward-compatibility path. ``full-01`` and
+    ``hard-full-01`` were swept before snapshots existed, nothing migrates them,
+    and ``merge`` against them must keep working off the packaged set.
+    """
+    path = f"{experiment_prefix(experiment_id)}/questions.json"
+    return store.uri(path) if store.exists(path) else ""
+
+
+def merge_args(  # noqa: PLR0913 - these are merge's own parameters; a dataclass
     # wrapper would add a type for a single call site and hide nothing.
     experiment_id: str,
     out: str,
@@ -204,6 +242,7 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
     tiers: list,
     approaches: list,
     question_limit: int = 0,
+    questions: str = "",
 ) -> list[str]:
     """Build the `bq-context merge` argv the exit task runs.
 
@@ -213,6 +252,12 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
     ``question_limit`` must match what the shards actually ran. Omitting it makes
     merge expect the full question set and report phantom missing cells, which
     then fails the run for a completeness problem that does not exist.
+
+    ``questions`` is the same hazard one level up, and a worse version of it.
+    Merge computes expected cells from a question set; if the shards ran a custom
+    one and the exit task uses the image's baked-in 25, then *every* real cell is
+    unexpected and *every* built-in question is missing. Empty means the sweep
+    predates snapshots, where the packaged default is the right answer.
     """
     args = [
         "bq-context",
@@ -224,6 +269,8 @@ def merge_args(  # noqa: PLR0913 - these are merge's own six parameters; a datac
         "--runs",
         str(runs),
     ]
+    if questions:
+        args += ["--questions", questions]
     if question_limit:
         args += ["--limit", str(question_limit)]
     for tier in tiers:

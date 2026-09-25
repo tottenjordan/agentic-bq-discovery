@@ -32,9 +32,11 @@ import pytest
 import typer
 
 from bq_context import cli
+from bq_context.runner.store import LocalStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 IMAGE = "us-central1-docker.pkg.dev/p/bq-context/runner:abc1234"
 
@@ -152,7 +154,9 @@ def test_a_clean_tree_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     cli._require_clean_tree()
 
 
-def test_submit_pipeline_builds_before_it_compiles(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_submit_pipeline_builds_before_it_compiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Covers the wiring, not just the function.
 
     Ordering is the whole point: Vertex rejects the job at creation when the image
@@ -160,6 +164,9 @@ def test_submit_pipeline_builds_before_it_compiles(monkeypatch: pytest.MonkeyPat
     """
     from typer.testing import CliRunner
 
+    # `submit-pipeline` now snapshots the question set to the bucket before
+    # compiling; conftest pins a fake project, so a real store 404s here.
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: LocalStore(tmp_path))
     order: list[str] = []
     monkeypatch.setattr(cli, "ensure_image", lambda *_: order.append("build"))
     monkeypatch.setattr(

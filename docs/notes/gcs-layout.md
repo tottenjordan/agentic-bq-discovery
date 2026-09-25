@@ -14,7 +14,8 @@ gs://{bucket}/
 │       └── ladder.json                      what `preflight` measured about it
 │
 ├── experiments/{experiment_id}/
-│   ├── experiment.json        the corpus this id was FIRST run against
+│   ├── experiment.json        the corpus + questions this id was FIRST run against
+│   ├── questions.json         the question set, snapshotted at submission
 │   ├── shards/{tier}__{approach}/           STABLE — resume and merge read this
 │   │   ├── attempt-NNNN.jsonl
 │   │   ├── summary-NNNN.json
@@ -83,6 +84,25 @@ someone trusts to mean the data is complete.
 no prefix or recursive form, on purpose: this store holds twelve hours of
 irreplaceable agent output and the only object the code ever removes is a
 seventeen-byte marker it wrote itself. Resist widening it.
+
+## Why the question set is snapshotted, not referenced
+
+`submit-pipeline --questions` could have passed a URI through and let each shard
+read it. Copying it into the experiment prefix instead buys two things a
+reference cannot.
+
+It **cannot change under a running sweep.** A full factorial is 24 shards over
+~2 hours; the source file is a mutable object for all of it. The snapshot is
+written once, before the job is created.
+
+It **archives the question set with the results it produced.** The same move
+`corpus/{fingerprint}/` makes: a year later, "what was byoq-01 actually asked?"
+is answerable from the bucket rather than from someone's laptop.
+
+The snapshot is the one write in this layout that is *not* best effort. The
+corpus and provisioning records are diagnostics — losing one costs provenance.
+This is an input every shard reads, so failing to write it stops the submission
+rather than producing 24 shards that cannot find their questions.
 
 ## Two things that follow from the exit task's guarantee
 

@@ -47,7 +47,10 @@ app = typer.Typer(
     add_completion=False,
 )
 
-DEFAULT_QUESTIONS = Path("experiments/questions.json")
+#: A str, not a Path. `--questions` also accepts a gs:// URI, and PurePath
+#: collapses the double slash in a scheme -- "gs://b/x" becomes "gs:/b/x" --
+#: which silently routed every pipeline shard down the local-file branch.
+DEFAULT_QUESTIONS = "experiments/questions.json"
 
 #: Empty means "work it out at parse time". These were literals naming the
 #: project this was developed against, which is unreachable for anyone else —
@@ -170,7 +173,14 @@ BaselineOpt = Annotated[
     int,
     typer.Option("--baseline", min=0, max=3, help="Tier to compare enrichment against."),
 ]
-QuestionsOpt = Annotated[Path, typer.Option("--questions", help="Path to questions.json.")]
+QuestionsOpt = Annotated[
+    str,
+    typer.Option(
+        "--questions",
+        help="Path or gs:// URI to a questions file. Must be str, not Path: see "
+        "DEFAULT_QUESTIONS for why.",
+    ),
+]
 
 
 @app.callback()
@@ -217,11 +227,33 @@ def _config() -> ExperimentConfig:
         raise typer.Exit(2) from exc
 
 
-def _load_questions(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        typer.secho(f"Questions file not found: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(2)
-    raw = json.loads(path.read_text())
+def _load_questions(source: str | Path) -> dict[str, dict[str, Any]]:
+    """Load a question set from a local path or a ``gs://`` URI.
+
+    The URI form is what a shard uses: ``submit-pipeline`` snapshots the set into
+    the experiment prefix, and every shard reads that copy rather than whatever
+    the submitter's filesystem happened to hold.
+
+    Both go through ``store_for``, so there is one GCS client in the process and
+    the local branch stays exercised by every test. A missing source exits 2
+    either way — a typo'd path is the likeliest error here, and the message is
+    the whole diagnosis.
+    """
+    location = str(source)
+    try:
+        if location.startswith("gs://"):
+            prefix, _, name = location.rpartition("/")
+            text = store_for(prefix).read_text(name)
+        else:
+            # Deliberately not through the store. A local run then has no
+            # dependency on one at all, which is what keeps `run-shard` usable
+            # with no credentials — and what keeps the local branch exercised by
+            # every test rather than only by the ones that build a store.
+            text = Path(location).read_text()
+    except (FileNotFoundError, OSError):
+        typer.secho(f"Questions file not found: {location}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from None
+    raw = json.loads(text)
     items = raw["questions"] if isinstance(raw, dict) else raw
     return {str(q["id"]): q for q in items}
 
@@ -420,6 +452,133 @@ def _tier_profile(tier: int, cache: TableCache) -> dict[str, Any]:
         "terms": counts["terms"],
         "aspects": sorted(aspects),
     }
+
+
+def assess_questions(
+    questions: Mapping[str, Mapping[str, Any]], corpus_tables: Sequence[str]
+) -> list[str]:
+    """Judge a question set against the corpus it will be asked about.
+
+    Returns fatal problems; there are no warnings here, because every case this
+    catches makes a cell unscoreable rather than merely odd.
+
+    A ``must_have`` naming a table that does not exist scores 0 recall forever —
+    across every tier, every approach, every run — and reads as a genuine
+    finding. That is the same shape as the trap preflight was built for:
+    ``lookupContext`` returning empty instead of 403, producing a plausible
+    wrong answer rather than an error. It barely mattered while the question set
+    was ours and pinned to the corpus in the same commit. It matters a great
+    deal once ``--questions`` can point at a hand-written file.
+
+    ``distractor`` is checked too. One that does not exist is not a distractor,
+    it is a typo, and it silently disarms the trap question it was written for —
+    the one category where taking the bait is the thing being measured.
+
+    Every bad question is reported, not just the first: preflight against a real
+    corpus is minutes, and fixing a hand-written set one run at a time is
+    miserable.
+    """
+    import difflib  # noqa: PLC0415
+
+    known = set(corpus_tables)
+    problems: list[str] = []
+    for qid, question in questions.items():
+        relevance = question.get("relevance") or {}
+        if not relevance.get("must_have"):
+            problems.append(
+                f"{qid} has no must_have tables, so nothing can score it. "
+                f"Every question needs at least one table that answers it."
+            )
+            continue
+        for field in ("must_have", "nice_to_have", "distractor"):
+            for table in relevance.get(field, []):
+                if str(table) in known:
+                    continue
+                close = difflib.get_close_matches(str(table), known, n=1, cutoff=0.8)
+                hint = f" Did you mean {close[0]}?" if close else ""
+                problems.append(
+                    f"{qid} references {table} in {field}, which is not in the corpus.{hint}"
+                )
+    return problems
+
+
+def _require_expected_questions(
+    questions: Mapping[str, Mapping[str, Any]], expected: str, source: str | Path
+) -> None:
+    """Refuse to run if the question set is not the one this shard was sent for.
+
+    Closes the window between submission and execution. ``submit-pipeline``
+    fingerprints the set and snapshots it, but a snapshot is still an object
+    someone can overwrite while 24 shards are queued behind it.
+
+    An abort, not a warning — deliberately unlike the corpus check in
+    ``note_experiment_identity``. A changed corpus still produces cells for the
+    *same* questions, which remain comparable. A changed question set produces
+    cells for different questions under one experiment id, which merge then
+    reads as simultaneously missing and unexpected.
+
+    An empty ``expected`` means unchecked, the same convention
+    ``corpus_fingerprint`` uses: a local ``run-shard`` has nothing to compare to.
+    """
+    if not expected:
+        return
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+
+    found = questions_fingerprint(questions)
+    if found == expected:
+        return
+    typer.secho(
+        f"The question set at {source} has changed since submission "
+        f"(expected {expected}, found {found}). Refusing to mix two question "
+        f"sets in one results file.",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _snapshot_questions(out: str, experiment_id: str, source: str | Path) -> str:
+    """Copy the question set into the experiment prefix and return its fingerprint.
+
+    The copy is the point. Shards read the snapshot rather than the submitter's
+    filesystem, which means the set cannot change under a running sweep, and it
+    is archived with the results it produced — the same move
+    ``corpus/{fingerprint}/`` makes for the corpus.
+
+    Not best effort, unlike the corpus and provisioning records. Those are
+    diagnostics; this is an input every shard depends on, so failing to write it
+    must stop the submission rather than produce 24 shards that cannot find
+    their questions.
+    """
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+    from bq_context.runner.resume import experiment_prefix  # noqa: PLC0415
+
+    questions = _load_questions(source)
+    fingerprint = questions_fingerprint(questions)
+    store = store_for(out)
+    target = f"{experiment_prefix(experiment_id)}/questions.json"
+    store.write_text(target, json.dumps({"questions": list(questions.values())}, indent=2) + "\n")
+    typer.echo(f"questions {len(questions)} from {source}  fingerprint={fingerprint}")
+    typer.echo(f"snapshot  {store.uri(target)}")
+    return fingerprint
+
+
+def _assess_question_set(source: str | Path) -> list[str]:
+    """Load the question set, report it, and judge it against the corpus.
+
+    Separated from ``preflight`` only to keep that function under the complexity
+    limit; it is one step of the gate, not a reusable utility.
+    """
+    from bq_context.corpus import setup  # noqa: PLC0415
+    from bq_context.corpus.manifest import corpus_manifest  # noqa: PLC0415
+    from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
+
+    questions = _load_questions(source)
+    typer.echo(
+        f"questions: {len(questions)} loaded from {source}  "
+        f"fingerprint={questions_fingerprint(questions)}"
+    )
+    return assess_questions(questions, [t["name"] for t in corpus_manifest(setup)["tables"]])
 
 
 def assess_ladder(ladder: list[dict[str, Any]], *, empty: bool) -> tuple[list[str], list[str]]:
@@ -1004,6 +1163,7 @@ def preflight(
         typer.Option("--json", help="Also write the ladder and corpus fingerprint here."),
     ] = None,
     out: OutOpt = DEFAULT_OUT,
+    questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     settle: Annotated[
         int,
         typer.Option(
@@ -1078,13 +1238,13 @@ def preflight(
         )
 
     problems, warnings = assess_ladder(ladder, empty=len(caches[tier]) == 0)
+    problems.extend(_assess_question_set(questions_file))
 
     if len(caches) > 1:
         search = _live_search(config)
-        # The shipped set, which is what a sweep runs today. Once `--questions`
-        # lands, this takes whatever the submitter chose -- which is the whole
+        # Whatever the submitter chose, not the shipped set -- which is the whole
         # point, since a user-supplied set is exactly the cold one.
-        questions = _load_questions(DEFAULT_QUESTIONS)
+        questions = _load_questions(questions_file)
         probe = _probe_search_labels(questions, sorted(caches), search)
         typer.echo(_probe_summary(probe, sorted(caches)))
         # Twice, separated in time. One observation cannot distinguish a moving
@@ -1153,6 +1313,14 @@ def run_shard(
             "change invalidates the KFP shard cache.",
         ),
     ] = "",
+    questions_fingerprint: Annotated[
+        str,
+        typer.Option(
+            "--questions-fingerprint",
+            help="The question set this shard was submitted against. The shard "
+            "refuses to run if what it loads does not match. Empty means unchecked.",
+        ),
+    ] = "",
 ) -> None:
     """Run every cell for one (tier, approach) pair. Resumable."""
     config = _config()
@@ -1165,6 +1333,7 @@ def run_shard(
         raise typer.Exit(2)
 
     questions = _load_questions(questions_file)
+    _require_expected_questions(questions, questions_fingerprint, questions_file)
     chosen = [q.strip() for q in question_ids.split(",") if q.strip()] or list(questions)
     if limit:
         # Deterministic prefix, not a sample: the smoke and pilot profiles must
@@ -1196,6 +1365,7 @@ def run_shard(
         experiment_id,
         corpus_fingerprint=spec.corpus_fingerprint,
         code_version=spec.code_version,
+        questions_fingerprint=questions_fingerprint,
     ):
         typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)
 
@@ -1613,6 +1783,7 @@ def submit_pipeline_cmd(
             "override with BQ_CONTEXT_SERVICE_ACCOUNT.",
         ),
     ] = DEFAULT_SA,
+    questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     skip_infra: Annotated[bool, typer.Option("--skip-infra")] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Compile and print, do not submit.")
@@ -1678,6 +1849,7 @@ def submit_pipeline_cmd(
     from bq_context.runner.resume import new_run_id  # noqa: PLC0415
 
     run_id = new_run_id(sha)
+    questions_fp = _snapshot_questions(out, experiment_id, questions_file)
 
     params = {
         "project": config.project,
@@ -1685,6 +1857,7 @@ def submit_pipeline_cmd(
         "run_id": run_id,
         "out": out,
         "code_version": sha,
+        "questions_fingerprint": questions_fp,
         "service_account": service_account,
         "skip_infra": skip_infra,
         "refresh_figures": refresh_figures,

@@ -159,13 +159,24 @@ def _pipeline_parameters() -> set[str]:
     return set(bq_context_pipeline.component_spec.inputs or {})
 
 
-def _capture_parameters(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> dict[str, Any]:
+def _capture_parameters(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], store: object | None = None
+) -> dict[str, Any]:
     """Invoke `submit-pipeline` with the submit call stubbed, and return the
-    `parameter_values` it would have sent to Vertex."""
+    `parameter_values` it would have sent to Vertex.
+
+    The store is stubbed too. `submit-pipeline` snapshots the question set into
+    the bucket before compiling, and conftest pins a fake project — so a real
+    `store_for` here reaches GCS and 404s, which is exactly the hermeticity trap
+    conftest exists to prevent.
+    """
+    import tempfile
+
     from typer.testing import CliRunner
 
     from bq_context import cli
     from bq_context.pipeline import submit as submit_module
+    from bq_context.runner.store import LocalStore
 
     seen: dict[str, Any] = {}
 
@@ -174,6 +185,7 @@ def _capture_parameters(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> dic
         return _FakeJob()
 
     monkeypatch.setattr(submit_module, "submit_pipeline", _capture)
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: store or LocalStore(tempfile.mkdtemp()))
     result = CliRunner().invoke(cli.app, argv)
     assert result.exit_code == 0, result.output
     return seen["parameter_values"]
@@ -225,36 +237,103 @@ def test_refresh_figures_is_reachable_from_the_command_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The specific regression: the flag exists and its value reaches the job."""
-    from typer.testing import CliRunner
-
-    from bq_context import cli
-    from bq_context.pipeline import submit as submit_module
-
-    seen: dict[str, Any] = {}
-    monkeypatch.setattr(
-        submit_module,
-        "submit_pipeline",
-        lambda **kwargs: (seen.update(kwargs), _FakeJob())[1],
-    )
     argv = ["submit-pipeline", "-e", "t", "--image", "img:test", "--refresh-figures"]
-    result = CliRunner().invoke(cli.app, argv)
-    assert result.exit_code == 0, result.output
-    assert seen["parameter_values"]["refresh_figures"] is True
+    assert _capture_parameters(monkeypatch, argv)["refresh_figures"] is True
 
 
 def test_figures_are_off_unless_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generation is slow, paid and non-deterministic; the default must be off."""
-    from typer.testing import CliRunner
+    argv = ["submit-pipeline", "-e", "t", "--image", "img:test"]
+    assert _capture_parameters(monkeypatch, argv)["refresh_figures"] is False
 
-    from bq_context import cli
-    from bq_context.pipeline import submit as submit_module
 
-    seen: dict[str, Any] = {}
-    monkeypatch.setattr(
-        submit_module,
-        "submit_pipeline",
-        lambda **kwargs: (seen.update(kwargs), _FakeJob())[1],
+# ---------------------------------------------------------------------------
+# The question set travels as a snapshot, not a reference
+#
+# Shards read a copy in the experiment prefix rather than the submitter's
+# filesystem. That is what makes the set immutable for the life of the run --
+# it cannot be edited out from under 24 shards -- and what archives it beside
+# the results it produced.
+# ---------------------------------------------------------------------------
+def test_the_submission_carries_a_question_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sent even for the default set. It costs nothing and gives a second,
+    independent guard beside `code_version`."""
+    argv = ["submit-pipeline", "-e", "t", "--image", "img:test"]
+    assert _capture_parameters(monkeypatch, argv)["questions_fingerprint"]
+
+
+def test_the_snapshot_lands_in_the_experiment_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from bq_context.runner.store import LocalStore
+
+    store = LocalStore(tmp_path)
+    _capture_parameters(
+        monkeypatch, ["submit-pipeline", "-e", "byoq", "--image", "img:test"], store=store
     )
-    result = CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t", "--image", "img:test"])
-    assert result.exit_code == 0, result.output
-    assert seen["parameter_values"]["refresh_figures"] is False
+
+    snapshot = json.loads(store.read_text("experiments/byoq/questions.json"))
+    assert len(snapshot["questions"]) == 25, "the shipped set should round-trip whole"
+    assert all("relevance" in q for q in snapshot["questions"])
+
+
+def test_a_custom_question_file_changes_the_fingerprint_and_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole feature in one test: point --questions somewhere else and both
+    the submitted fingerprint and the archived copy follow."""
+    import json
+
+    from bq_context.runner.store import LocalStore
+
+    custom = tmp_path / "mine.json"
+    custom.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "id": "mine-q1",
+                        "category": "single-table",
+                        "question": "t",
+                        "relevance": {"must_have": ["austin_bikeshare_trips"]},
+                    }
+                ]
+            }
+        )
+    )
+    store = LocalStore(tmp_path / "store")
+    default_fp = _capture_parameters(
+        monkeypatch, ["submit-pipeline", "-e", "t", "--image", "img:test"]
+    )["questions_fingerprint"]
+    custom_fp = _capture_parameters(
+        monkeypatch,
+        ["submit-pipeline", "-e", "byoq", "--image", "img:test", "--questions", str(custom)],
+        store=store,
+    )["questions_fingerprint"]
+
+    assert custom_fp != default_fp
+    snapshot = json.loads(store.read_text("experiments/byoq/questions.json"))
+    assert [q["id"] for q in snapshot["questions"]] == ["mine-q1"]
+
+
+def test_the_snapshot_preserves_question_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--limit` takes a deterministic prefix, so a snapshot that reordered the
+    set would make a smoke run measure different questions than the submitter
+    chose — and the fingerprint would no longer describe what ran."""
+    import json
+
+    from bq_context.runner.store import LocalStore
+
+    store = LocalStore(tmp_path)
+    _capture_parameters(
+        monkeypatch, ["submit-pipeline", "-e", "byoq", "--image", "img:test"], store=store
+    )
+
+    raw = json.loads(Path("experiments/questions.json").read_text())
+    original = raw["questions"] if isinstance(raw, dict) else raw
+    snapshot = json.loads(store.read_text("experiments/byoq/questions.json"))["questions"]
+    assert [q["id"] for q in snapshot] == [q["id"] for q in original]

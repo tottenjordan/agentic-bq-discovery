@@ -14,6 +14,7 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from bq_context import cli
@@ -23,6 +24,7 @@ from bq_context.cli import (
     _effective_identity,
     app,
     assess_ladder,
+    assess_questions,
     assess_search_convergence,
 )
 from bq_context.runner.cells import APPROACHES
@@ -616,12 +618,11 @@ def test_only_tiers_present_in_both_are_compared() -> None:
     assert assess_search_convergence({"tier0": 3, "tier1": 4}, {"tier0": 3}) == []
 
 
-def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Covers the wiring, which the unit tests above do not.
+def _stub_preflight_dependencies(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Everything `preflight` touches that needs a network or credentials.
 
-    Deleting the `assess_search_convergence(probe, again)` call from preflight
-    leaves every test in this section green, because they exercise the function
-    directly. Found by mutation.
+    Shared by the wiring tests below. Returns the probe-call log, which the
+    convergence test asserts on and the others ignore.
     """
     import time
 
@@ -664,6 +665,7 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
         },
     )
     monkeypatch.setattr(cli, "assess_ladder", lambda *_, **__: ([], []))
+    monkeypatch.setattr(cli, "_record_corpus", lambda *_a, **_k: None)
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
     class _Ctx:
@@ -678,6 +680,17 @@ def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         TableCache, "build", classmethod(lambda _cls, *_a, **_k: TableCache.empty())
     )
+    return calls
+
+
+def test_preflight_probes_twice_and_reports_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Covers the wiring, which the unit tests above do not.
+
+    Deleting the `assess_search_convergence(probe, again)` call from preflight
+    leaves every test in this section green, because they exercise the function
+    directly. Found by mutation.
+    """
+    calls = _stub_preflight_dependencies(monkeypatch)
 
     result = runner.invoke(app, ["preflight", "--tier", "1", "--baseline", "0", "--settle", "1"])
     assert set(calls) == {1, 2}, f"expected two probe passes, saw {sorted(set(calls))}"
@@ -827,3 +840,315 @@ def test_the_warning_names_the_question_so_it_can_be_acted_on() -> None:
     assert len(warnings) == 1
     assert "cat-kiosk" in warnings[0]
     assert "cat-knots" not in warnings[0], "a settled question must not be named"
+
+
+# ---------------------------------------------------------------------------
+# Loading a question set
+#
+# The shards read a snapshot out of the bucket, so the loader has to take a URI
+# as well as a path. Everything else about it must not move: a missing file is
+# the most likely user error here, and the message is the whole diagnosis.
+# ---------------------------------------------------------------------------
+def _write_questions(path: Path, payload: object) -> Path:
+    path.write_text(json.dumps(payload))
+    return path
+
+
+QUESTION = {"id": "q1", "category": "single-table", "question": "t", "relevance": {}}
+
+
+def test_a_local_question_file_still_loads(tmp_path: Path) -> None:
+    src = _write_questions(tmp_path / "q.json", {"questions": [QUESTION]})
+    assert list(cli._load_questions(src)) == ["q1"]
+
+
+def test_a_bare_list_still_loads(tmp_path: Path) -> None:
+    """Both shapes are in the wild; `experiments/questions.json` is the dict
+    form and hand-written sets are usually the list form."""
+    src = _write_questions(tmp_path / "q.json", [QUESTION])
+    assert list(cli._load_questions(src)) == ["q1"]
+
+
+def test_a_question_set_loads_from_a_uri(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shard's path. `store_for` is the seam, so a LocalStore stands in for
+    GCS and the branch is exercised without a network or credentials."""
+    # `store_for` is handed the *prefix* and the object is read by basename,
+    # so the stand-in store is rooted where the real GcsStore would be.
+    seen: list[str] = []
+
+    def _store(location: str) -> LocalStore:
+        seen.append(location)
+        return LocalStore(tmp_path)
+
+    LocalStore(tmp_path).write_text("questions.json", json.dumps({"questions": [QUESTION]}))
+    monkeypatch.setattr(cli, "store_for", _store)
+
+    loaded = cli._load_questions("gs://bucket/experiments/e/questions.json")
+    assert seen == ["gs://bucket/experiments/e"], "the prefix was not split off the object name"
+    assert list(loaded) == ["q1"]
+
+
+def test_a_missing_question_file_exits_2_and_names_it(tmp_path: Path) -> None:
+    """A typo'd path is the likeliest failure, and it must not surface as a
+    traceback three frames deep in json."""
+    missing = tmp_path / "nope.json"
+    with pytest.raises(typer.Exit) as exc:
+        cli._load_questions(missing)
+    assert exc.value.exit_code == 2
+
+
+def test_a_missing_uri_exits_2_rather_than_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shard pointed at a snapshot that was never written should say so, not
+    raise FileNotFoundError from three frames down."""
+    monkeypatch.setattr(cli, "store_for", lambda _location: LocalStore(tmp_path))
+    with pytest.raises(typer.Exit) as exc:
+        cli._load_questions("gs://bucket/experiments/absent/questions.json")
+    assert exc.value.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Questions must name tables the corpus actually has
+#
+# A question whose `must_have` names a table that does not exist scores 0 recall
+# forever, across every tier and approach, and reads as a genuine finding. It is
+# the same shape as the trap preflight was built for: `lookupContext` returning
+# empty rather than 403, producing a plausible wrong answer instead of an error.
+#
+# This matters far more once `--questions` can point at a hand-written file.
+# ---------------------------------------------------------------------------
+CORPUS_TABLES = ["austin_bikeshare_stations", "austin_bikeshare_trips", "nyc_taxi_trips_2022"]
+
+
+def _question(qid: str, **relevance: list[str]) -> dict:
+    return {"id": qid, "category": "single-table", "question": "t", "relevance": relevance}
+
+
+def test_a_question_set_that_fits_the_corpus_passes() -> None:
+    questions = {"q1": _question("q1", must_have=["austin_bikeshare_trips"])}
+    assert assess_questions(questions, CORPUS_TABLES) == []
+
+
+def test_an_unknown_must_have_is_a_problem() -> None:
+    questions = {"q1": _question("q1", must_have=["austin_bikeshare_station"])}
+    problems = assess_questions(questions, CORPUS_TABLES)
+
+    assert len(problems) == 1
+    assert "q1" in problems[0], "the question id is what makes this actionable"
+    assert "austin_bikeshare_station" in problems[0]
+
+
+def test_a_near_miss_gets_a_suggestion() -> None:
+    """The realistic error is a typo or a singular/plural slip, and the fix is
+    obvious once the right name is on screen."""
+    questions = {"q1": _question("q1", must_have=["austin_bikeshare_station"])}
+    assert "austin_bikeshare_stations" in assess_questions(questions, CORPUS_TABLES)[0]
+
+
+def test_a_wild_name_gets_no_misleading_suggestion() -> None:
+    questions = {"q1": _question("q1", must_have=["completely_unrelated_thing"])}
+    problem = assess_questions(questions, CORPUS_TABLES)[0]
+    assert "Did you mean" not in problem
+
+
+def test_an_unknown_distractor_is_also_a_problem() -> None:
+    """A distractor that does not exist is not a distractor, it is a typo — and
+    it silently disarms the trap question it was written for, which is the one
+    category where a wrong answer is the thing being measured."""
+    questions = {"q1": _question("q1", must_have=["nyc_taxi_trips_2022"], distractor=["taxi_zone"])}
+    assert assess_questions(questions, CORPUS_TABLES)
+
+
+def test_an_unknown_nice_to_have_is_also_a_problem() -> None:
+    questions = {"q1": _question("q1", must_have=["nyc_taxi_trips_2022"], nice_to_have=["nope"])}
+    assert assess_questions(questions, CORPUS_TABLES)
+
+
+def test_a_question_with_no_expected_answer_is_a_problem() -> None:
+    """Nothing can score it: recall over an empty must_have is undefined, and
+    the cell would count toward completeness while measuring nothing."""
+    questions = {"q1": _question("q1", must_have=[])}
+    problems = assess_questions(questions, CORPUS_TABLES)
+    assert len(problems) == 1
+    assert "q1" in problems[0]
+
+
+def test_every_bad_question_is_reported_not_just_the_first() -> None:
+    """Fixing a hand-written set one preflight run at a time is miserable, and
+    preflight against a real corpus is minutes, not seconds."""
+    questions = {
+        "q1": _question("q1", must_have=["nope_one"]),
+        "q2": _question("q2", must_have=["nope_two"]),
+    }
+    assert len(assess_questions(questions, CORPUS_TABLES)) == 2
+
+
+def test_the_shipped_question_set_fits_the_shipped_corpus() -> None:
+    """A guard on our own data. `experiments/questions.json` and the base corpus
+    are edited independently, and a rename on either side would otherwise show
+    up as a quietly worse result rather than an error."""
+    from bq_context.corpus import setup
+    from bq_context.corpus.manifest import corpus_manifest
+
+    questions = cli._load_questions(cli.DEFAULT_QUESTIONS)
+    tables = [t["name"] for t in corpus_manifest(setup)["tables"]]
+    assert assess_questions(questions, tables) == []
+
+
+def test_preflight_refuses_a_question_set_the_corpus_cannot_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covers the wiring, which the `assess_questions` tests above do not.
+
+    Deleting the `problems.extend(_assess_question_set(...))` call leaves every
+    one of them green, because they exercise the function directly. Found by
+    mutation, exactly like the convergence test above it.
+    """
+    _stub_preflight_dependencies(monkeypatch)
+    bad = tmp_path / "q.json"
+    bad.write_text(json.dumps({"questions": [_question("mine-q1", must_have=["no_such_table"])]}))
+
+    result = runner.invoke(
+        app,
+        ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", "--questions", str(bad)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "no_such_table" in result.output
+    assert "mine-q1" in result.output
+
+
+def test_preflight_passes_a_question_set_that_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: a gate that always fails is not a gate. Also pins that
+    the fingerprint is reported, which is how a user confirms the set they meant
+    is the set that ran."""
+    _stub_preflight_dependencies(monkeypatch)
+    good = tmp_path / "q.json"
+    good.write_text(
+        json.dumps({"questions": [_question("mine-q1", must_have=["austin_bikeshare_trips"])]})
+    )
+
+    result = runner.invoke(
+        app,
+        ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", "--questions", str(good)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "questions: 1 loaded" in result.output
+    assert "fingerprint=" in result.output
+
+
+def test_preflight_probes_the_question_set_it_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The convergence probe exists to catch a *cold* set, and a user-supplied
+    set is the cold one. Probing the shipped 25 instead -- warm from every prior
+    run -- reports a settled index for questions it never asked."""
+    _stub_preflight_dependencies(monkeypatch)
+    asked: set[str] = set()
+
+    def _live(_config: object) -> Callable[[int, str], list]:
+        def _search(_tier: int, question: str) -> list:
+            asked.add(question)
+            return []
+
+        return _search
+
+    monkeypatch.setattr(cli, "_live_search", _live)
+    mine = tmp_path / "q.json"
+    question = _question("mine-q1", must_have=["austin_bikeshare_trips"])
+    question["question"] = "a question only this file asks"
+    mine.write_text(json.dumps({"questions": [question]}))
+
+    result = runner.invoke(
+        app,
+        ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", "--questions", str(mine)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert asked == {"a question only this file asks"}
+
+
+# ---------------------------------------------------------------------------
+# A shard runs the questions it was sent for, or it does not run
+#
+# `submit-pipeline` fingerprints the set and snapshots it, but a snapshot is
+# still an object someone can overwrite while 24 shards sit in the queue behind
+# it. This closes that window.
+# ---------------------------------------------------------------------------
+def test_a_matching_question_set_is_accepted() -> None:
+    from bq_context.runner.planner import questions_fingerprint
+
+    questions = {"q1": _question("q1", must_have=["t"])}
+    cli._require_expected_questions(questions, questions_fingerprint(questions), "src")
+
+
+def test_a_changed_question_set_stops_the_shard() -> None:
+    """An abort, not a warning — unlike the corpus check. A changed corpus still
+    produces cells for the *same* questions, which stay comparable. A changed
+    question set produces cells for different questions under one experiment id,
+    which merge then reads as both missing and unexpected."""
+    questions = {"q1": _question("q1", must_have=["t"])}
+    with pytest.raises(typer.Exit) as exc:
+        cli._require_expected_questions(questions, "0123456789abcdef", "gs://b/q.json")
+    assert exc.value.exit_code == 1
+
+
+def test_an_unchecked_question_set_runs() -> None:
+    """Empty means "nothing to compare against" — a local `run-shard` — the same
+    convention `corpus_fingerprint` uses in `note_experiment_identity`."""
+    cli._require_expected_questions({"q1": _question("q1", must_have=["t"])}, "", "src")
+
+
+def test_the_mismatch_message_names_both_fingerprints(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Whoever reads this is deciding whether their edit or someone else's is
+    the surprise, and they cannot do that from one number."""
+    questions = {"q1": _question("q1", must_have=["t"])}
+    with contextlib.suppress(typer.Exit):
+        cli._require_expected_questions(questions, "0123456789abcdef", "gs://b/q.json")
+    err = capsys.readouterr().err
+    assert "0123456789abcdef" in err
+    assert "gs://b/q.json" in err
+
+
+def test_a_gs_uri_survives_the_command_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE regression, and the reason the unit tests above did not catch it.
+
+    `QuestionsOpt` was typed `Path`, so Typer coerced the URI before
+    `_load_questions` ever saw it — and `PurePath` collapses `gs://bucket/x` to
+    `gs:/bucket/x`. The gs:// branch then never fired, the local branch looked
+    for a file named `gs:/...`, and every shard exited 2.
+
+    The unit tests passed a `str` directly and so bypassed the coercion
+    entirely. This one goes through the parser, which is where the bug lived.
+    """
+    seen: list[str] = []
+    store = LocalStore(tmp_path)
+    store.write_text("questions.json", json.dumps({"questions": [QUESTION]}))
+
+    def _store(location: str) -> LocalStore:
+        seen.append(location)
+        return store
+
+    monkeypatch.setattr(cli, "store_for", _store)
+    monkeypatch.setattr(cli, "_load_questions", cli._load_questions)
+
+    @cli.app.command("probe-questions")
+    def _probe(questions_file: cli.QuestionsOpt = cli.DEFAULT_QUESTIONS) -> None:
+        typer.echo(",".join(cli._load_questions(questions_file)))
+
+    result = runner.invoke(
+        cli.app,
+        ["probe-questions", "--questions", "gs://bucket/experiments/e/questions.json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "q1" in result.output
+    assert seen == ["gs://bucket/experiments/e"], f"the scheme was mangled: {seen}"

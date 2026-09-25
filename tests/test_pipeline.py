@@ -513,3 +513,33 @@ def test_no_component_body_references_a_module_level_name(spec: dict[str, Any]) 
         "A component body is extracted standalone; import what it needs inside "
         "the function, or inline the value."
     )
+
+
+def test_the_shard_cache_key_carries_all_three_identities(spec: dict[str, Any]) -> None:
+    """The shards are the only cacheable task that does real work, so every
+    input that changes what a cell *means* has to be declared here or a rerun
+    returns the wrong cells, green.
+
+    Three of them now, each added after a near miss or a real one:
+    `code_version` for edited code, `corpus_fingerprint` for re-provisioned
+    enrichment, `questions_fingerprint` for a swapped question set.
+    """
+    # Nested inside the ParallelFor group, not at the root dag.
+    shard = _component(spec, "for-loop-2")["dag"]["tasks"]["run-shard"]
+    params = shard["inputs"]["parameters"]
+    for identity in ("code_version", "corpus_fingerprint", "questions_fingerprint"):
+        assert identity in params, identity
+
+
+def test_the_shards_read_the_snapshot_not_the_image(spec: dict[str, Any]) -> None:
+    """The image's baked-in `experiments/questions.json` is the default for a
+    local run. A pipeline shard must read the copy `submit-pipeline` wrote, or
+    `--questions` would be accepted at submission and silently ignored."""
+    import json as _json
+
+    # The component body is embedded as source in the executor spec, so the
+    # flag and the path it points at are both readable there.
+    executor = _json.dumps(spec["deploymentSpec"]["executors"])
+    assert "--questions" in executor
+    assert "experiments/{experiment_id}/questions.json" in executor
+    assert "--questions-fingerprint" in executor

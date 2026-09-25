@@ -354,6 +354,7 @@ def run_shard(
     out: str,
     code_version: str,
     corpus_fingerprint: str = "",
+    questions_fingerprint: str = "",
     question_limit: int = 0,
 ) -> None:
     """Execute one (tier, approach) shard. Resumable, and never fails the run.
@@ -390,6 +391,13 @@ def run_shard(
         code_version,
         "--corpus-fingerprint",
         corpus_fingerprint,
+        # The snapshot, not the image's copy. `submit-pipeline` wrote it, so it
+        # cannot change under the sweep, and the fingerprint below is what the
+        # shard checks it against on arrival.
+        "--questions",
+        f"{out}/experiments/{experiment_id}/questions.json",
+        "--questions-fingerprint",
+        questions_fingerprint,
     ]
     if question_limit:
         args += ["--limit", str(question_limit)]
@@ -461,7 +469,8 @@ def finalize(
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
     base = ["--experiment-id", experiment_id, "--out", out]
 
-    from bq_context.pipeline.publish import merge_args
+    from bq_context.pipeline.publish import merge_args, snapshot_questions_uri
+    from bq_context.runner.store import store_for
 
     merge = merge_args(
         experiment_id,
@@ -470,6 +479,11 @@ def finalize(
         tiers=tiers,
         approaches=approaches,
         question_limit=question_limit,
+        # The set the shards ran, not the image's. Without this the exit task
+        # computes expected cells from the baked-in 25, so a custom sweep has
+        # every real cell unexpected and every built-in question missing --
+        # and `require_complete` fails a healthy run.
+        questions=snapshot_questions_uri(store_for(out), experiment_id),
     )
 
     # Give score and plot real destinations. Both flags already existed and were
@@ -529,9 +543,9 @@ def finalize(
         publish_summary,
         run_manifest,
         run_preflight,
+        run_questions,
     )
     from bq_context.runner.resume import experiment_prefix
-    from bq_context.runner.store import store_for
 
     store = store_for(out)
     if published := publish_report(store, experiment_id, run_id, report.path):
@@ -566,6 +580,7 @@ def finalize(
         question_limit=question_limit,
         report=report_json,
         corpus=run_preflight(store, experiment_id, run_id),
+        questions=run_questions(store, experiment_id),
         # Not os.environ directly: CORPUS_PROFILE is absent from .env, so it is
         # never forwarded and the container falls back to setup.py's default.
         # The first live manifest said corpus_profile "" for a run that measured

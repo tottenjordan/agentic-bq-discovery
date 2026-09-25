@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from bq_context.runner.planner import corpus_fingerprint
+from bq_context.runner.planner import corpus_fingerprint, questions_fingerprint
 
 LADDER = [
     {"tier": 0, "tables": 15, "bytes": 49089, "profiled": 0, "terms": 0, "aspects": []},
@@ -72,7 +72,7 @@ def test_it_is_stable_across_processes() -> None:
     import sys
 
     code = (
-        "from bq_context.runner.planner import corpus_fingerprint;"
+        "from bq_context.runner.planner import corpus_fingerprint, questions_fingerprint;"
         f"print(corpus_fingerprint({LADDER!r}))"
     )
     runs = {
@@ -120,3 +120,117 @@ def test_it_is_short_and_hex() -> None:
 def test_an_empty_ladder_is_handled() -> None:
     """preflight can be run for a single tier, or fail before building rungs."""
     assert corpus_fingerprint([])
+
+
+# ---------------------------------------------------------------------------
+# The question-set fingerprint
+#
+# Same job as the corpus one, one layer up: `code_version` describes the
+# questions only while they are baked into the image. Once `--questions` can
+# point somewhere else, swapping the file and resubmitting at the same commit
+# would return cells scored against the *old* questions.
+#
+# The asymmetry with `corpus_fingerprint` is the thing to get right. That one
+# sorts its ladder because tier order is presentation. Here order is *content*:
+# `--limit` takes a deterministic prefix (`list(questions)[:limit]`), so
+# reordering the file changes which questions a smoke or pilot run measures
+# while editing nothing.
+# ---------------------------------------------------------------------------
+def _q(qid: str, must: list[str], *, text: str = "t", distractor: list[str] | None = None) -> dict:
+    return {
+        "id": qid,
+        "category": "single-table",
+        "question": text,
+        "relevance": {
+            "must_have": must,
+            "nice_to_have": [],
+            "distractor": distractor or [],
+        },
+    }
+
+
+QUESTIONS = {
+    "q1": _q("q1", ["trips"], text="busiest stations?"),
+    "q2": _q("q2", ["taxi"], text="tips by hour?", distractor=["taxi_zone_geom"]),
+}
+
+
+def test_the_same_question_set_fingerprints_the_same() -> None:
+    assert questions_fingerprint(QUESTIONS) == questions_fingerprint(dict(QUESTIONS))
+
+
+def test_editing_a_question_changes_it() -> None:
+    edited = {**QUESTIONS, "q1": _q("q1", ["trips"], text="quietest stations?")}
+    assert questions_fingerprint(edited) != questions_fingerprint(QUESTIONS)
+
+
+def test_reordering_the_file_changes_it() -> None:
+    """THE asymmetry with corpus_fingerprint, and the reason this is not a
+    sorted hash. `--limit` takes a deterministic prefix, so `--limit 1` against
+    a reordered file measures a different question with no edit anywhere."""
+    reordered = {"q2": QUESTIONS["q2"], "q1": QUESTIONS["q1"]}
+    assert questions_fingerprint(reordered) != questions_fingerprint(QUESTIONS)
+
+
+def test_reordering_a_relevance_list_does_not_change_it() -> None:
+    """The other half of the same decision. Order inside `must_have` carries
+    nothing, so a reshuffled list is the same experiment and must stay a cache
+    hit — a fingerprint that moves spuriously turns every resume into a
+    12-hour resweep."""
+    shuffled = {**QUESTIONS, "q1": _q("q1", ["b", "a"], text="busiest stations?")}
+    ordered = {**QUESTIONS, "q1": _q("q1", ["a", "b"], text="busiest stations?")}
+    assert questions_fingerprint(shuffled) == questions_fingerprint(ordered)
+
+
+def test_changing_a_distractor_changes_it() -> None:
+    """Distractors are not decoration: the trap questions exist to catch a
+    retriever that takes the bait, so swapping one is a different experiment."""
+    swapped = {**QUESTIONS, "q2": _q("q2", ["taxi"], text="tips by hour?", distractor=["other"])}
+    assert questions_fingerprint(swapped) != questions_fingerprint(QUESTIONS)
+
+
+def test_renaming_a_question_id_changes_it() -> None:
+    """`cell_key` is built from the id, so a rename makes every prior cell
+    unmatchable — a different experiment by any useful definition."""
+    renamed = {"q9": QUESTIONS["q1"], "q2": QUESTIONS["q2"]}
+    assert questions_fingerprint(renamed) != questions_fingerprint(QUESTIONS)
+
+
+def test_the_question_fingerprint_is_stable_across_processes() -> None:
+    """Same reason as the corpus one: the submitting CLI computes it and the
+    shard re-checks it, in different processes. A salted hash() would read as
+    flakiness rather than a bug."""
+    import subprocess
+    import sys
+
+    code = (
+        "from bq_context.runner.planner import questions_fingerprint;"
+        f"print(questions_fingerprint({QUESTIONS!r}))"
+    )
+    runs = {
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        for _ in range(2)
+    }
+    assert len(runs) == 1
+    assert runs == {questions_fingerprint(QUESTIONS)}
+
+
+def test_the_question_fingerprint_is_short_and_hex() -> None:
+    fp = questions_fingerprint(QUESTIONS)
+    assert len(fp) == 16
+    assert all(c in "0123456789abcdef" for c in fp)
+
+
+def test_an_empty_question_set_is_handled() -> None:
+    """Not a crash: `--limit` can produce one, and a clear downstream failure
+    beats a traceback from the hasher."""
+    assert questions_fingerprint({})
+
+
+def test_a_question_missing_optional_fields_is_handled() -> None:
+    """A hand-written set may omit `nice_to_have` or `relevance` entirely. That
+    is a question with no expected answer, which preflight should reject — but
+    the hasher is not the place to raise."""
+    assert questions_fingerprint({"q1": {"id": "q1", "question": "t"}})

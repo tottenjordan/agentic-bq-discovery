@@ -1,0 +1,124 @@
+{
+  "questions": [
+    {
+      "id": "gloss-cyclone",
+      "category": "single-table",
+      "question": "How many tropical cyclones intensified past depression strength in the Atlantic basin?",
+      "relevance": {
+        "must_have": ["hurricanes"],
+        "nice_to_have": [],
+        "distractor": ["weather_stations"]
+      }
+    },
+    {
+      "id": "gloss-landfall",
+      "category": "single-table",
+      "question": "Which storms made landfall on the Gulf coast, and where did the centre cross the coastline?",
+      "relevance": {
+        "must_have": ["hurricanes"],
+        "nice_to_have": [],
+        "distractor": ["us_counties"]
+      }
+    },
+    {
+      "id": "gloss-gratuity",
+      "category": "single-table",
+      "question": "How large a gratuity do passengers add on top of the metered amount?",
+      "relevance": {
+        "must_have": ["nyc_taxi_trips_2022"],
+        "nice_to_have": [],
+        "distractor": ["taxi_zone_geom"]
+      }
+    },
+    {
+      "id": "gloss-walkup",
+      "category": "single-table",
+      "question": "Do walk-up casual users take longer elapsed rides than annual members?",
+      "relevance": {
+        "must_have": ["austin_bikeshare_trips"],
+        "nice_to_have": [],
+        "distractor": ["citibike_stations"]
+      }
+    },
+    {
+      "id": "gloss-ghcn",
+      "category": "single-table",
+      "question": "Which Global Historical Climatology Network observation sites report from Texas?",
+      "relevance": {
+        "must_have": ["weather_stations"],
+        "nice_to_have": [],
+        "distractor": ["austin_bikeshare_stations"]
+      }
+    },
+    {
+      "id": "gloss-natality-term",
+      "category": "single-table",
+      "question": "What are the live birth counts and associated maternal measures for each county?",
+      "relevance": {
+        "must_have": ["county_natality"],
+        "nice_to_have": [],
+        "distractor": ["usa_names_1910_current"]
+      }
+    },
+    {
+      "id": "guide-natality-geo",
+      "category": "multi-table-related",
+      "question": "Map average birth weight by county, including each county's geographic boundary.",
+      "relevance": {
+        "must_have": ["county_natality", "us_counties"],
+        "nice_to_have": ["zip_codes"],
+        "distractor": ["population_by_zip_2010"]
+      }
+    },
+    {
+      "id": "guide-dock-join",
+      "category": "multi-table-related",
+      "question": "Which named docking kiosks do the longest-elapsed rides start from?",
+      "relevance": {
+        "must_have": ["austin_bikeshare_trips", "austin_bikeshare_stations"],
+        "nice_to_have": [],
+        "distractor": ["citibike_stations"]
+      }
+    },
+    {
+      "id": "prof-network-size",
+      "category": "multi-table-related",
+      "question": "Which of the two bike docking networks has more than a thousand kiosks in it?",
+      "relevance": {
+        "must_have": ["citibike_stations"],
+        "nice_to_have": ["austin_bikeshare_stations"],
+        "distractor": ["austin_bikeshare_trips"]
+      }
+    },
+    {
+      "id": "prof-pollutant-coverage",
+      "category": "multi-table-disparate",
+      "question": "Which pollutant is measured at the most monitoring sites, and how does coverage compare with the weather observation network?",
+      "relevance": {
+        "must_have": ["air_quality_annual_summary", "weather_stations"],
+        "nice_to_have": [],
+        "distractor": ["us_counties"]
+      }
+    },
+    {
+      "id": "ctrl-obvious",
+      "category": "single-table",
+      "question": "What are the busiest bike share stations in Austin by month?",
+      "relevance": {
+        "must_have": ["austin_bikeshare_trips"],
+        "nice_to_have": ["austin_bikeshare_stations"],
+        "distractor": ["citibike_stations"]
+      }
+    },
+    {
+      "id": "ctrl-trap",
+      "category": "trap",
+      "question": "Which Citi Bike docking kiosks in Austin see the heaviest use?",
+      "relevance": {
+        "must_have": ["austin_bikeshare_stations"],
+        "nice_to_have": ["austin_bikeshare_trips"],
+        "distractor": ["citibike_stations"]
+      }
+    }
+  ]
+}

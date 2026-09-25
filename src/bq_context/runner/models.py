@@ -51,6 +51,10 @@ class ShardSpec(BaseModel):
     #: input that stops a corpus change returning cells scored on the old corpus.
     #: Defaulted so older attempt files and summaries still parse.
     corpus_fingerprint: str = ""
+    #: Who ran the shard. Semantic search returns different tables to different
+    #: principals, so this is part of what was measured, not bookkeeping. Empty
+    #: means unknown. Not a cache-key input: the pipeline always runs as its SA.
+    principal: str = ""
 
     @property
     def shard_id(self) -> str:
@@ -81,6 +85,10 @@ class Cell(BaseModel):
     #: two corpora in one results table are distinguishable only by an
     #: experiment-id naming convention.
     corpus_fingerprint: str = ""
+    #: The account whose search this cell measured. Two principals can get
+    #: different tables for the same query, so cells from different principals
+    #: are different measurements with identical keys. Empty means unknown.
+    principal: str = ""
 
     # -- question context ----------------------------------------------------
     category: str = ""
@@ -122,6 +130,7 @@ class ShardResult(BaseModel):
     approach: str
     code_version: str
     corpus_fingerprint: str = ""
+    principal: str = ""
     planned: int
     already_done: int
     executed: int

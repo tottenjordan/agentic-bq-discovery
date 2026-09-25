@@ -155,7 +155,11 @@ def _executor() -> AdkCellExecutor:
     """An executor with no ADK behind it; only `_invoke` is exercised."""
     obj = AdkCellExecutor.__new__(AdkCellExecutor)
     obj.spec = SimpleNamespace(
-        approach="kc_search", tier=1, code_version="test", corpus_fingerprint="test-corpus"
+        approach="kc_search",
+        tier=1,
+        code_version="test",
+        corpus_fingerprint="test-corpus",
+        principal="sa@test-project.iam",
     )
     obj.app_name = "bench_kc_search"
     return obj
@@ -257,6 +261,7 @@ def test_a_cell_records_the_corpus_it_came_from() -> None:
         tier=1,
         code_version="abc1234",
         corpus_fingerprint="13f9fcb47deb5c32",
+        principal="sa@test-project.iam",
     )
     cell = executor._blank_cell(
         {"id": "q1", "question": "text", "category": "single-table", "relevance": {}},
@@ -264,4 +269,5 @@ def test_a_cell_records_the_corpus_it_came_from() -> None:
     )
     assert cell.corpus_fingerprint == "13f9fcb47deb5c32"
     assert cell.code_version == "abc1234"
+    assert cell.principal == "sa@test-project.iam"
     assert cell.status == "error", "blank cells start as error until the run resolves"

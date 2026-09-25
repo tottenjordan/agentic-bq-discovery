@@ -244,6 +244,8 @@ class ShardRunner:
                 run_idx=run_idx,
                 status="error",
                 code_version=self.spec.code_version,
+                corpus_fingerprint=self.spec.corpus_fingerprint,
+                principal=self.spec.principal,
                 category=str(question.get("category", "")),
                 question=str(question.get("question", "")),
                 error_type=type(exc).__name__,
@@ -330,6 +332,7 @@ class ShardRunner:
             # threaded into each shard as a cache-key input, then thrown away, so
             # nothing in the stored results said which corpus produced them.
             corpus_fingerprint=self.spec.corpus_fingerprint,
+            principal=self.spec.principal,
             planned=planned,
             already_done=already_done,
             executed=self._done,

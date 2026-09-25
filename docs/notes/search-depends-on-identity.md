@@ -100,6 +100,24 @@ Tests: `tests/test_search_identity.py`, plus the preflight wiring tests in
 `tests/test_cli.py`. All three links (client, bound search, preflight) are
 mutation-tested. The middle one survived the first round of tests.
 
+### Every result says who measured it
+
+The check above catches the gap before a run. The results record it
+afterwards, so a mixed experiment cannot pass unnoticed:
+
+| where | what |
+|---|---|
+| each cell, and the BigQuery `principal` column | the account whose search it measured |
+| each shard summary | the account that ran the shard |
+| `experiment.json` | the first principal. A later shard run as someone else **warns**, just as a changed corpus does |
+| `merged/missing.json`, run `manifest.json` → `measured_by` | ok cells per principal. `merge` **warns** when there is more than one |
+
+User ADC has no email attribute, so the developer is identified through
+Google's tokeninfo endpoint. Without that, a developer's cells recorded `""`.
+An unknown principal never warns, so the one mix that matters would have been
+invisible. `""` still means unknown (cells from before the field existed, or a
+lookup that failed), and it is never counted as a second principal.
+
 ## Reproducing
 
 ```bash

@@ -161,3 +161,21 @@ def test_malformed_line_does_not_abort_the_merge(tmp_path: Path) -> None:
 
     assert result.ok_cells == 1
     assert result.complete
+
+
+def test_merge_counts_cells_per_principal(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    a = spec_for(0, "search_direct", ["q1", "q2", "q3"])
+    write_shard(
+        store,
+        a,
+        [
+            cell("q1", "search_direct", 0, principal="sa@p.iam"),
+            cell("q2", "search_direct", 0, principal="dev@example.com"),
+            cell("q3", "search_direct", 0),
+        ],
+    )
+    result = merge_experiment(store, EXPERIMENT, a.planned_cells())
+    assert result.principals == {"": 1, "dev@example.com": 1, "sa@p.iam": 1}
+    report = json.loads(store.read_text(missing_path(EXPERIMENT)))
+    assert report["principals"] == result.principals

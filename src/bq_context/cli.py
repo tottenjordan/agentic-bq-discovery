@@ -749,6 +749,21 @@ def _metadata_service_account() -> str:
         return resp.read().decode().strip()
 
 
+_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+
+
+def _tokeninfo_email(token: str) -> str:
+    """The account an access token was issued to, according to Google."""
+    import json  # noqa: PLC0415
+    import urllib.parse  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    # POSTed, so the token never lands in a URL or an access log.
+    data = urllib.parse.urlencode({"access_token": token}).encode()
+    with urllib.request.urlopen(_TOKENINFO_URL, data=data, timeout=5) as resp:
+        return str(json.load(resp).get("email", ""))
+
+
 def _effective_identity(credentials: Credentials | None) -> str:
     """Best-effort principal for the credentials in use.
 
@@ -782,7 +797,29 @@ def _effective_identity(credentials: Credentials | None) -> str:
         with contextlib.suppress(Exception):
             email = _metadata_service_account()
 
+    # User ADC carries no email attribute at all, so without this a developer's
+    # run recorded "" and the one pairing that matters -- the developer against
+    # the pipeline SA, whose search results differ -- compared unknown with
+    # known and warned about nothing. tokeninfo names the token's owner.
+    token = getattr(creds, "token", None)
+    if email in ("", _METADATA_ALIAS) and isinstance(token, str) and token:
+        with contextlib.suppress(Exception):
+            email = _tokeninfo_email(token)
+
     return "" if email == _METADATA_ALIAS else email
+
+
+def _measuring_principal() -> str:
+    """Who a shard's searches run as, or ``""`` if that cannot be told.
+
+    Never raises: this runs at the head of a 90-minute shard, and an identity
+    that cannot be resolved is a gap in the provenance, not a reason to refuse
+    the work.
+    """
+    try:
+        return _effective_identity(None)
+    except Exception:  # noqa: BLE001 - no ADC at all is "unknown", not fatal
+        return ""
 
 
 def _check_permissions(project: str, credentials: Credentials | None) -> list[str]:
@@ -1432,6 +1469,7 @@ def run_shard(
         runs=runs,
         code_version=code_version or _code_version(),
         corpus_fingerprint=corpus_fingerprint,
+        principal=_measuring_principal(),
     )
 
     from bq_context.runner.cells import execute_shard  # noqa: PLC0415
@@ -1446,6 +1484,7 @@ def run_shard(
         corpus_fingerprint=spec.corpus_fingerprint,
         code_version=spec.code_version,
         questions_fingerprint=questions_fingerprint,
+        principal=spec.principal,
     ):
         typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)
 
@@ -1525,6 +1564,15 @@ def merge(
     if result.missing:
         preview = ", ".join(result.missing[:5])
         typer.secho(f"missing (first 5): {preview}", fg=typer.colors.YELLOW, err=True)
+
+    if len(known := [p for p in result.principals if p]) > 1:
+        typer.secho(
+            f"WARN  {experiment_id} mixes cells measured by {len(known)} principals: "
+            f"{', '.join(known)}. Semantic search answers each differently, so these "
+            f"are not one measurement. See docs/notes/search-depends-on-identity.md.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
     _report_shard_health(experiment_id, store)
 

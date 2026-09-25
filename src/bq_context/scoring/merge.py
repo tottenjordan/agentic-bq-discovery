@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,9 @@ class MergeResult:
     error_cells: int
     expected: int = 0
     missing: list[str] = field(default_factory=list)
+    #: Principal -> ok cells it measured. ``""`` counts cells that predate the
+    #: field. More than one real principal means the file mixes two searches.
+    principals: dict[str, int] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -91,6 +95,7 @@ def merge_experiment(
     store.write_text(merged_path(experiment_id), body)
 
     missing = sorted(set(expected_cells) - set(ok)) if expected_cells else []
+    principals = dict(sorted(Counter(cell.principal for cell in ok.values()).items()))
     store.write_text(
         missing_path(experiment_id),
         json.dumps(
@@ -99,6 +104,7 @@ def merge_experiment(
                 "expected": len(expected_cells or []),
                 "present": len(ok),
                 "missing_count": len(missing),
+                "principals": principals,
                 "missing": missing,
             },
             indent=2,
@@ -114,6 +120,7 @@ def merge_experiment(
         error_cells=len(latest) - len(ok),
         expected=len(expected_cells or []),
         missing=missing,
+        principals=principals,
     )
     logger.info(
         "Merged %d shard(s), %d records -> %d unique (%d ok, %d error); %d missing",

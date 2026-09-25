@@ -27,6 +27,16 @@ notes.
   comparison discriminate (kc_context loses 6.3 points to its own reranker) while the **tier**
   comparison stayed flat; plus the two bugs only a real run exposed.
 
+- [enrich-probe-01/02](enrichment-probe-results.md) — a large tier effect, **reproducible**:
+  two sweeps 9.5h apart give byte-identical search results, so it is not index warm-up.
+  Search-based approaches go 0.292 -> 0.875; context-reading ones stay at ceiling. Unresolved:
+  the same shard run locally measures tier 0 at 0.625, not 0.292.
+
+- [Why the tier response is flat](enrichment-dependent-questions.md) — tier 0 has no headroom
+  (0.94-1.00 recall), and the corpus descriptions already pre-empt the glossary. The
+  enrichment-dependent question set that probes it, and why it measures a ceiling rather than
+  an unbiased estimate.
+
 - [Upstream experiment: findings and implications](upstream-experiment.md) — their headline
   result is a **null result** (flat tier response, ceiling effect); the per-approach cost table
   that drives our sharding; the three globals; upstream's known defects.

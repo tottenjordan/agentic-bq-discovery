@@ -1,0 +1,180 @@
+{
+  "questions": [
+    {
+      "id": "cat-depression",
+      "category": "single-table",
+      "question": "How many systems originating over warm water were only ever classified as depressions?",
+      "relevance": {
+        "must_have": [
+          "hurricanes"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "weather_stations"
+        ]
+      }
+    },
+    {
+      "id": "cat-landfall",
+      "category": "single-table",
+      "question": "Which storms had their centre cross a coastline, and at what point did it happen?",
+      "relevance": {
+        "must_have": [
+          "hurricanes"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "us_counties"
+        ]
+      }
+    },
+    {
+      "id": "cat-gratuity",
+      "category": "single-table",
+      "question": "How generous a gratuity does a passenger hand over on top of the metered charge?",
+      "relevance": {
+        "must_have": [
+          "nyc_taxi_trips_2022"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "taxi_zone_geom"
+        ]
+      }
+    },
+    {
+      "id": "cat-walkup",
+      "category": "single-table",
+      "question": "Do walk-up casual users ride for longer than people on an annual membership?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_trips"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "citibike_stations"
+        ]
+      }
+    },
+    {
+      "id": "cat-knots",
+      "category": "single-table",
+      "question": "Which rotating systems reported sustained surface winds above 100 knots?",
+      "relevance": {
+        "must_have": [
+          "hurricanes"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "weather_stations"
+        ]
+      }
+    },
+    {
+      "id": "cat-fips-join",
+      "category": "single-table",
+      "question": "Report live infant measures against the Federal Information Processing Standards identifier for each area.",
+      "relevance": {
+        "must_have": [
+          "county_natality"
+        ],
+        "nice_to_have": [
+          "us_counties"
+        ],
+        "distractor": [
+          "zip_codes"
+        ]
+      }
+    },
+    {
+      "id": "cat-checkout",
+      "category": "single-table",
+      "question": "How many minutes elapse between checkout and return on each ride?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_trips"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "nyc_taxi_trips_2022"
+        ]
+      }
+    },
+    {
+      "id": "cat-kiosk-join",
+      "category": "multi-table-related",
+      "question": "Which named kiosks do the longest-elapsed rides get checked out from?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_trips",
+          "austin_bikeshare_stations"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "citibike_stations"
+        ]
+      }
+    },
+    {
+      "id": "cat-kiosk",
+      "category": "single-table",
+      "question": "Where are the physical kiosks that cycles get checked out from and returned to?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_stations"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "citibike_stations"
+        ]
+      }
+    },
+    {
+      "id": "cat-concentration",
+      "category": "multi-table-disparate",
+      "question": "How do yearly summarized concentrations compare against the elapsed ride minutes in the same city?",
+      "relevance": {
+        "must_have": [
+          "air_quality_annual_summary",
+          "austin_bikeshare_trips"
+        ],
+        "nice_to_have": [],
+        "distractor": [
+          "weather_stations"
+        ]
+      }
+    },
+    {
+      "id": "ctrl-obvious",
+      "category": "single-table",
+      "question": "What are the busiest bike share stations in Austin by month?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_trips"
+        ],
+        "nice_to_have": [
+          "austin_bikeshare_stations"
+        ],
+        "distractor": [
+          "citibike_stations"
+        ]
+      }
+    },
+    {
+      "id": "ctrl-trap",
+      "category": "trap",
+      "question": "Which Citi Bike docking kiosks in Austin see the heaviest use?",
+      "relevance": {
+        "must_have": [
+          "austin_bikeshare_stations"
+        ],
+        "nice_to_have": [
+          "austin_bikeshare_trips"
+        ],
+        "distractor": [
+          "citibike_stations"
+        ]
+      }
+    }
+  ]
+}

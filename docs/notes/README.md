@@ -27,9 +27,10 @@ notes.
   comparison discriminate (kc_context loses 6.3 points to its own reranker) while the **tier**
   comparison stayed flat; plus the two bugs only a real run exposed.
 
-- [The tier response is not flat](enrichment-probe-results.md) — **the first non-null enrichment
-  result.** Search-based approaches go 0.292 -> 0.875 across tiers; context-reading approaches
-  stay at ceiling. The gain comes from profiling and guidelines, not the glossary.
+- [enrich-probe-01](enrichment-probe-results.md) — a large tier effect that **is not yet
+  believable**: the tier-0 baseline moved from 0.292 to 0.625 forty minutes after the run.
+  Dataplex semantic search appears to warm per *novel query*, and 
+  cannot see it because it probes with fixed queries. Warm a new question set before measuring it.
 
 - [Why the tier response is flat](enrichment-dependent-questions.md) — tier 0 has no headroom
   (0.94-1.00 recall), and the corpus descriptions already pre-empt the glossary. The

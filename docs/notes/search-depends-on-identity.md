@@ -118,6 +118,24 @@ An unknown principal never warns, so the one mix that matters would have been
 invisible. `""` still means unknown (cells from before the field existed, or a
 lookup that failed), and it is never counted as a second principal.
 
+Verified end to end on 2026-09-25 with two smoke pipelines at `169eff1`, one as
+the pipeline SA and one as the compute SA (`--service-account`):
+
+- **Every level names the right account.** That covers the BigQuery
+  `principal` column (18/18 in each run), `experiment.json`, `missing.json` and
+  the manifest's `measured_by`. So the metadata-server fallback resolves the
+  `"default"` alias inside a real Vertex task, not just in tests.
+- **Each pipeline run reproduces a local run as the same principal**, 3/3 each.
+  The comparison was run with a laptop impersonating the SA, and a laptop as
+  ADC for the compute SA.
+- **Adding a local ADC shard to the SA's experiment triggers both warnings**:
+  one from `run-shard` and one from `merge`.
+- **The compute SA can run the whole pipeline.** It passed validate-config and
+  preflight and produced all 18 cells. Running as a complete-view principal is
+  therefore a working option, at the cost of that account's broad roles.
+
+Both experiments were deleted afterwards.
+
 ## Watching for a heal
 
 The open question is whether a new principal's semantic view improves with age.
@@ -148,6 +166,18 @@ The two baselines agree, so the job measures what the laptop does. The drop
 from 9 to 6 is real but unexplained. The SA is older, and the afternoon's label
 and description re-indexing may have caught up late. Tier 0 is the only tier
 that differs.
+
+The shipped set (25 questions, `search_direct`, laptop as ADC vs laptop as the
+SA) moved the same way on tier 0 only:
+
+| when (UTC) | tier 0 | tier 1 | tier 2 | tier 3 | SA's tier 0 → 3 gain, mean recall |
+|---|---|---|---|---|---|
+| 2026-09-25 morning | 1/25 identical | 7/25 | 25/25 | 15/25 | +0.347 |
+| 2026-09-25 20:45 | 9/25 identical | 7/25 | 25/25 | 15/25 | +0.173 |
+
+ADC's own gain is +0.000 at both times. Tier 0 converging while tiers 1 and 3
+stay put fits neither "the SA ages into the full view" nor "nothing changes"
+cleanly, which is why the daily job keeps watching.
 
 The only grant it adds is `serviceAccountTokenCreator` for the compute SA,
 on the pipeline SA only, and `down` removes it. `tests/test_identity_watch.py`

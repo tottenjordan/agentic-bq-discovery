@@ -404,3 +404,40 @@ def test_the_question_fingerprint_is_recorded_on_a_first_run(tmp_path: Path) -> 
     )
     record = json.loads(store.read_text("experiments/exp/experiment.json"))
     assert record["questions_fingerprint"] == "q1"
+
+
+def test_the_first_principal_is_recorded(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", principal="sa@p.iam"
+    )
+    record = json.loads(store.read_text("experiments/exp/experiment.json"))
+    assert record["principal"] == "sa@p.iam"
+
+
+def test_a_changed_principal_warns(tmp_path: Path) -> None:
+    """`full-01`'s misreading: the pipeline SA's cells compared against a
+    developer's re-run, two searches that return different tables."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", principal="sa@p.iam"
+    )
+    warnings = note_experiment_identity(
+        store, "exp", corpus_fingerprint="aaa", code_version="v1", principal="dev@example.com"
+    )
+    assert len(warnings) == 1
+    assert "sa@p.iam" in warnings[0]
+    assert "dev@example.com" in warnings[0]
+
+
+def test_an_unknown_principal_is_not_a_change(tmp_path: Path) -> None:
+    """A record written before the field existed, or a run that could not tell
+    who it was, must not warn on every shard."""
+    store = LocalStore(tmp_path)
+    note_experiment_identity(store, "exp", corpus_fingerprint="aaa", code_version="v1")
+    assert (
+        note_experiment_identity(
+            store, "exp", corpus_fingerprint="aaa", code_version="v1", principal="sa@p.iam"
+        )
+        == []
+    )

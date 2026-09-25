@@ -181,6 +181,9 @@ def run_manifest(  # noqa: PLR0913 - the manifest's fields are its API; bundling
         "corpus_fingerprint": corpus.get("fingerprint", ""),
         "questions_fingerprint": questions.get("fingerprint", ""),
         "question_count": questions.get("count", 0),
+        # From the merge report: who measured the cells, not who ran this task.
+        # Absent on reports merged before principals were recorded.
+        "measured_by": dict(report.get("principals", {})),
         "resource_prefix": environ.get("RESOURCE_PREFIX", ""),
         "corpus_profile": environ.get("CORPUS_PROFILE", ""),
         "agent_model": environ.get("AGENT_MODEL", ""),

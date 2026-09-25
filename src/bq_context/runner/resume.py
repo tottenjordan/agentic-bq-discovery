@@ -110,13 +110,15 @@ def experiment_record_path(experiment_id: str) -> str:
     return f"{experiment_prefix(experiment_id)}/experiment.json"
 
 
-def note_experiment_identity(
+def note_experiment_identity(  # noqa: PLR0913 - one keyword per identity it records;
+    # bundling them would add a type for two call sites and hide none of them.
     store: ArtifactStore,
     experiment_id: str,
     *,
     corpus_fingerprint: str,
     code_version: str,
     questions_fingerprint: str = "",
+    principal: str = "",
 ) -> list[str]:
     """Record what this experiment was first run against; warn if it has changed.
 
@@ -139,6 +141,11 @@ def note_experiment_identity(
     this one exists for the case a shard is run by hand with no expected value,
     where a warning is all that is available.
 
+    The principal is the third door. Dataplex semantic search returns different
+    tables to different principals, so a shard resumed by hand as the developer
+    appends cells measuring a different search to the pipeline SA's. That is how
+    `full-01`'s tier comparison came to be misread as index warming.
+
     A changed ``code_version`` is recorded but never warned about: a new commit
     is what invalidates the shard cache, so every resubmit after an edit has one.
 
@@ -160,6 +167,7 @@ def note_experiment_identity(
                         "experiment_id": experiment_id,
                         "corpus_fingerprint": corpus_fingerprint,
                         "questions_fingerprint": questions_fingerprint,
+                        "principal": principal,
                         "code_version": code_version,
                         "first_run_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     },
@@ -181,6 +189,7 @@ def note_experiment_identity(
     for label, now, was in (
         ("corpus", corpus_fingerprint, previous.get("corpus_fingerprint", "")),
         ("question set", questions_fingerprint, previous.get("questions_fingerprint", "")),
+        ("principal", principal, previous.get("principal", "")),
     ):
         if not now or not was or now == was:
             continue

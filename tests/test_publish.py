@@ -377,3 +377,12 @@ def test_a_torn_snapshot_does_not_lose_the_manifest(tmp_path: Path) -> None:
     store = LocalStore(tmp_path)
     store.write_text("experiments/e/questions.json", "{not json")
     assert run_questions(store, "e")["count"] == 0
+
+
+def test_the_manifest_says_who_measured_the_cells() -> None:
+    report = {"expected": 2, "present": 2, "missing_count": 0, "principals": {"sa@p.iam": 2}}
+    assert _manifest(report=report)["measured_by"] == {"sa@p.iam": 2}
+
+
+def test_a_report_from_before_principals_gives_an_empty_record() -> None:
+    assert _manifest()["measured_by"] == {}

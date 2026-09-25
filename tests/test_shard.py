@@ -392,3 +392,21 @@ async def test_the_fingerprint_reaches_the_summary(tmp_path: Path) -> None:
 
     written = json.loads(store.read_text(f"{shard_prefix(spec)}/summary-0001.json"))
     assert written["corpus_fingerprint"] == "13f9fcb47deb5c32"
+
+
+async def test_the_principal_reaches_the_summary_and_an_error_cell(tmp_path: Path) -> None:
+    """Who searched is part of what was measured. A cell that raised must carry
+    it too, or a run's failures cannot be attributed."""
+
+    class Raises(FakeExecutor):
+        async def __call__(self, _question: dict[str, Any], _run_idx: int) -> Cell:
+            msg = "bug"
+            raise RuntimeError(msg)
+
+    spec = make_spec(runs=1, n_questions=1, principal="sa@p.iam")
+    store = LocalStore(tmp_path)
+    result = await ShardRunner(spec, store, Raises(spec), QUESTIONS, heartbeat_seconds=1e6).run()
+    assert result.principal == "sa@p.iam"
+
+    (line,) = store.read_text(f"{shard_prefix(spec)}/attempt-0001.jsonl").splitlines()
+    assert json.loads(line)["principal"] == "sa@p.iam"

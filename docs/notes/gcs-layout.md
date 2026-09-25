@@ -14,7 +14,7 @@ gs://{bucket}/
 │       └── ladder.json                      what `preflight` measured about it
 │
 ├── experiments/{experiment_id}/
-│   ├── experiment.json        the corpus + questions this id was FIRST run against
+│   ├── experiment.json        the corpus, questions + principal this id was FIRST run against
 │   ├── questions.json         the question set, snapshotted at submission
 │   ├── shards/{tier}__{approach}/           STABLE — resume and merge read this
 │   │   ├── attempt-NNNN.jsonl
@@ -24,7 +24,7 @@ gs://{bucket}/
 │   │   ├── results.jsonl
 │   │   └── missing.json
 │   └── runs/{run_id}/                       one execution, never overwritten
-│       ├── manifest.json      commit, corpus, config, completeness counts
+│       ├── manifest.json      commit, corpus, config, completeness, who measured the cells
 │       ├── preflight.json     what preflight measured on this run
 │       ├── scoring/report.md
 │       ├── scoring/executive.html

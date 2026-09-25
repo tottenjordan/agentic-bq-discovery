@@ -77,3 +77,14 @@ def hermetic_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for key, value in _FAKE_ENV.items():
         monkeypatch.setenv(key, value)
+
+
+@pytest.fixture(autouse=True)
+def no_identity_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop `run-shard` asking Google who it is.
+
+    It resolves its principal from ADC and then tokeninfo: a network call on a
+    developer box, and a different answer in CI. Tests that care about the
+    principal set their own.
+    """
+    monkeypatch.setattr("bq_context.cli._measuring_principal", lambda: "")

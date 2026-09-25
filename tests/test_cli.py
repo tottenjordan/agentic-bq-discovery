@@ -1217,3 +1217,136 @@ def test_without_impersonation_there_is_nothing_to_compare(
 
     assert bound == [None]
     assert "different tables" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Who measured it
+#
+# Semantic search returns different tables to different principals, so the
+# principal is part of the measurement. See docs/notes/search-depends-on-identity.md.
+# ---------------------------------------------------------------------------
+def test_user_credentials_are_identified_through_tokeninfo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """User ADC has no email attribute. Resolving it to "" made the developer
+    unknown, and an unknown principal never warns -- so the one mix that
+    matters, the developer against the pipeline SA, was invisible."""
+    from bq_context import cli
+
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_tokeninfo_email", lambda t: (asked.append(t), "dev@example.com")[1])
+
+    class FakeUserCreds:
+        token = "ya29.token"  # noqa: S105 - a fake, never sent anywhere
+
+    assert _effective_identity(FakeUserCreds()) == "dev@example.com"  # type: ignore[arg-type]
+    assert asked == ["ya29.token"]
+
+
+def test_tokeninfo_is_not_asked_when_the_credentials_name_themselves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bq_context import cli
+
+    def _fail(_token: str) -> str:
+        msg = "tokeninfo called for a service account"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(cli, "_tokeninfo_email", _fail)
+
+    class FakeSaCreds:
+        service_account_email = "svc@p.iam.gserviceaccount.com"
+        token = "ya29.token"  # noqa: S105 - a fake, never sent anywhere
+
+    assert _effective_identity(FakeSaCreds()) == "svc@p.iam.gserviceaccount.com"  # type: ignore[arg-type]
+
+
+def test_a_failed_tokeninfo_is_unknown_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bq_context import cli
+
+    def _down(_token: str) -> str:
+        msg = "network"
+        raise OSError(msg)
+
+    monkeypatch.setattr(cli, "_tokeninfo_email", _down)
+
+    class FakeUserCreds:
+        token = "ya29.token"  # noqa: S105 - a fake, never sent anywhere
+
+    assert _effective_identity(FakeUserCreds()) == ""  # type: ignore[arg-type]
+
+
+def test_run_shard_stamps_its_principal_on_the_spec_and_the_experiment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from bq_context import cli
+    from bq_context.runner.models import ShardResult
+    from bq_context.runner.store import LocalStore
+
+    specs: list[ShardSpec] = []
+
+    def _execute(spec: ShardSpec, *_a: object, **_k: object) -> ShardResult:
+        specs.append(spec)
+        return ShardResult(
+            shard_id=spec.shard_id,
+            experiment_id="e",
+            tier=1,
+            approach="search_direct",
+            code_version="v1",
+            planned=1,
+            already_done=0,
+            executed=1,
+            succeeded=1,
+            failed=0,
+        )
+
+    store = LocalStore(tmp_path)
+    monkeypatch.setattr("bq_context.runner.cells.execute_shard", _execute)
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: store)
+    monkeypatch.setattr(cli, "_measuring_principal", lambda: "sa@test-project.iam")
+
+    result = runner.invoke(
+        app, ["run-shard", "-e", "e", "--tier", "1", "--approach", "search_direct", "--limit", "1"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [s.principal for s in specs] == ["sa@test-project.iam"]
+    record = json.loads(store.read_text("experiments/e/experiment.json"))
+    assert record["principal"] == "sa@test-project.iam"
+
+
+def _merge_with(monkeypatch: pytest.MonkeyPatch, principals: dict[str, int]) -> Result:
+    from bq_context import cli
+    from bq_context.scoring.merge import MergeResult
+
+    merged = MergeResult(
+        experiment_id="e",
+        shards_seen=1,
+        records_read=2,
+        unique_cells=2,
+        ok_cells=2,
+        error_cells=0,
+        principals=principals,
+    )
+    monkeypatch.setattr("bq_context.scoring.merge.merge_experiment", lambda *_a, **_k: merged)
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: object())
+    monkeypatch.setattr(cli, "_report_shard_health", lambda *_a: None)
+    return runner.invoke(app, ["merge", "-e", "e", "--no-bigquery"])
+
+
+def test_merge_warns_when_two_principals_measured_one_experiment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _merge_with(monkeypatch, {"dev@example.com": 1, "sa@p.iam": 1})
+    assert result.exit_code == 0, result.output
+    assert "2 principals" in result.output
+    assert "dev@example.com" in result.output
+    assert "sa@p.iam" in result.output
+
+
+def test_merge_does_not_count_unknown_as_a_second_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cells from before the field existed are not evidence of a mix."""
+    result = _merge_with(monkeypatch, {"": 5, "sa@p.iam": 1})
+    assert result.exit_code == 0, result.output
+    assert "principals" not in result.output

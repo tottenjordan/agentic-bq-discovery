@@ -48,6 +48,7 @@ SCALAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("written_at", "TIMESTAMP"),
     ("code_version", "STRING"),
     ("corpus_fingerprint", "STRING"),
+    ("principal", "STRING"),
     ("category", "STRING"),
     ("question", "STRING"),
     ("nominated_count", "INTEGER"),
@@ -115,6 +116,13 @@ COLUMN_DESCRIPTIONS: dict[str, str] = {
         "an experiment id is a naming convention, this is a measured fact. "
         "Deliberately excludes capsule bytes and search-hit counts, which drift "
         "between runs without the corpus changing."
+    ),
+    "principal": (
+        "The account that ran the search, e.g. the pipeline service account. "
+        "Dataplex semantic search returns different tables to different "
+        "principals for the same query, so rows measured by different principals "
+        "are not comparable. Group on this alongside corpus_fingerprint. Empty "
+        "means unknown: cells written before the column existed."
     ),
     "category": (
         "Question class: single-table, multi-table-related, multi-table-disparate, "

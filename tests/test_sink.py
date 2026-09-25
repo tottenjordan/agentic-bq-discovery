@@ -27,6 +27,7 @@ CELL: dict[str, Any] = {
     "written_at": "2026-09-22T07:00:00+00:00",
     "code_version": "abc1234",
     "corpus_fingerprint": "13f9fcb47deb5c32",
+    "principal": "sa@test-project.iam",
     "category": "single-table",
     "question": "which stations?",
     "relevance": {"must_have": ["weather_stations"], "nice_to_have": []},

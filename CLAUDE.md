@@ -57,6 +57,11 @@ Each of these cost real time here. All verified against the current tree.
   are missing. An under-permissioned run therefore looks like a null result
   instead of an error. Run `bq-context preflight --tier 3` before trusting any
   tier number.
+- **Semantic search answers each principal differently.** The pipeline SA sees a
+  degraded index that the developer does not, so a local re-run will not reproduce
+  a pipeline number. Compare only numbers measured by the same principal, and run
+  `preflight --impersonate <sa>`, which warns on the gap. See
+  [docs/notes/search-depends-on-identity.md](./docs/notes/search-depends-on-identity.md).
 - **`corpus/setup.py` is vendored from upstream** (see `NOTICE`) and kept
   re-syncable — the diff is ~58 lines, nearly all formatting. Put new code
   beside it, not in it; `corpus/bucket.py` is the pattern.

@@ -1242,10 +1242,9 @@ def preflight(
 
     if len(caches) > 1:
         search = _live_search(config)
-        # The shipped set, which is what a sweep runs today. Once `--questions`
-        # lands, this takes whatever the submitter chose -- which is the whole
+        # Whatever the submitter chose, not the shipped set -- which is the whole
         # point, since a user-supplied set is exactly the cold one.
-        questions = _load_questions(DEFAULT_QUESTIONS)
+        questions = _load_questions(questions_file)
         probe = _probe_search_labels(questions, sorted(caches), search)
         typer.echo(_probe_summary(probe, sorted(caches)))
         # Twice, separated in time. One observation cannot distinguish a moving

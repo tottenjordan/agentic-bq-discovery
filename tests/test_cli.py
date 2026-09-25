@@ -1041,6 +1041,37 @@ def test_preflight_passes_a_question_set_that_fits(
     assert "fingerprint=" in result.output
 
 
+def test_preflight_probes_the_question_set_it_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The convergence probe exists to catch a *cold* set, and a user-supplied
+    set is the cold one. Probing the shipped 25 instead -- warm from every prior
+    run -- reports a settled index for questions it never asked."""
+    _stub_preflight_dependencies(monkeypatch)
+    asked: set[str] = set()
+
+    def _live(_config: object) -> Callable[[int, str], list]:
+        def _search(_tier: int, question: str) -> list:
+            asked.add(question)
+            return []
+
+        return _search
+
+    monkeypatch.setattr(cli, "_live_search", _live)
+    mine = tmp_path / "q.json"
+    question = _question("mine-q1", must_have=["austin_bikeshare_trips"])
+    question["question"] = "a question only this file asks"
+    mine.write_text(json.dumps({"questions": [question]}))
+
+    result = runner.invoke(
+        app,
+        ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", "--questions", str(mine)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert asked == {"a question only this file asks"}
+
+
 # ---------------------------------------------------------------------------
 # A shard runs the questions it was sent for, or it does not run
 #

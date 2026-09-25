@@ -29,7 +29,7 @@ notes.
 
 - [enrich-probe-01](enrichment-probe-results.md) — a large tier effect that **is not yet
   believable**: the tier-0 baseline moved from 0.292 to 0.625 forty minutes after the run.
-  Dataplex semantic search appears to warm per *novel query*, and 
+  Dataplex semantic search appears to warm per *novel query*, and `assess_search_convergence`
   cannot see it because it probes with fixed queries. Warm a new question set before measuring it.
 
 - [Why the tier response is flat](enrichment-dependent-questions.md) — tier 0 has no headroom

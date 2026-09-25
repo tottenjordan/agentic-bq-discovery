@@ -1,4 +1,4 @@
-# enrich-probe-01/02: a large tier effect, reproducible but not yet explained
+# enrich-probe-01/02: a large tier effect whose size depends on who searches
 
 `enrich-probe-01` (03:31) and `enrich-probe-02` (13:00), 288/288 cells each,
 base corpus, survey profile.
@@ -9,10 +9,11 @@ withdrawal was wrong.** Re-running the whole sweep against a deliberately warmed
 index, nine and a half hours later, reproduces the first run *exactly* — 0 of 48
 (tier, question) search results differ.
 
-The effect is real and reproducible **inside the pipeline**. What is not yet
-explained is why the same code run locally measures a different tier-0 baseline,
-which is the subject of the last section. Until that is resolved the magnitude
-should not be published, though the direction is no longer in doubt.
+The effect is real and reproducible **inside the pipeline**. The same code run
+locally measures a different tier-0 baseline. **Resolved 2026-09-25:** semantic
+search returns different tables to the pipeline SA than to the developer; see
+[Search depends on identity](search-depends-on-identity.md). The direction is
+not in doubt, but the magnitude is specific to the principal that measured it.
 
 ## What the run reported
 
@@ -37,7 +38,7 @@ search_direct by tier, both runs:  t0=0.292  t1=0.625  t2=0.625  t3=0.875
 Not index warm-up. The pipeline sees the same thing nine and a half hours apart,
 across two separate image builds and two different commits.
 
-## The discrepancy that is left
+## The local-vs-pipeline discrepancy (resolved: caller identity)
 
 The same `run-shard` command, run from a laptop instead of a pipeline task,
 measures a different tier-0 baseline — and *that* is stable too:
@@ -55,26 +56,27 @@ tier0/cat-knots     pipeline: [air_quality_annual_summary, austin_crime]  local:
 tier0/cat-gratuity  pipeline: []                                          local: [nyc_taxi_trips_2022]
 ```
 
-Ruled out so far, each tested directly:
+Ruled out along the way, each tested directly:
 
 | hypothesis | test | result |
 |---|---|---|
 | index still warming | two sweeps 9.5h apart | identical — not it |
-| caller identity | preflight as ADC vs `--impersonate` the pipeline SA | identical — not it |
+| ~~caller identity~~ | preflight as ADC vs `--impersonate` the pipeline SA | **false negative** — `--impersonate` never reached the search; this *is* the cause |
 | request concurrency | local probe serial vs 8-way | identical — not it |
 | question text | cell's recorded `question` vs the file | identical — not it |
 | page size / scope | `search_stats` in the cells | both `page_size=20`, same dataset |
 | `GOOGLE_CLOUD_LOCATION` | local probe with the container's `global` | identical — not it |
 
-Tier 0 is the tier with the least indexed text, so it is where marginal matches
-live and where any difference in retrieval would surface first. That is
-consistent with what is seen but does not explain it.
+Searching as the SA from the laptop reproduces the pipeline's tier-0 results
+12/12, and searching as ADC reproduces the local ones. Pipeline tier 0 at
+0.292 is exactly what `bq-context-pipeline` sees. The principal matters, not
+the environment.
 
-**This must be resolved before the magnitude is quoted.** If the local view is
-correct the effect is roughly +0.250; if the pipeline view is correct it is
-+0.583. Both are non-zero, so the qualitative finding — enrichment substantially
-helps search-based retrieval on questions whose vocabulary is not already in the
-descriptions — survives either way.
+**Quote the magnitude with its principal.** The effect is +0.583 as the
+pipeline SA and roughly +0.250 as the developer. Both are non-zero, so the
+qualitative finding survives either way: enrichment substantially helps
+search-based retrieval on questions whose vocabulary is not already in the
+descriptions.
 
 ## Confirmed: only tier 0 moved
 
@@ -95,7 +97,9 @@ tier0/ctrl-trap      during: [3 tables]                               now: [+ ci
 
 Tiers 1, 2 and 3 are byte-identical between the run and now. This is the exact
 shape that manufactures a tier effect — the baseline artificially depressed
-while every other rung holds still — and it is not a subtle one.
+while every other rung holds still — and it is not a subtle one. ("Now" was a
+probe as ADC; the run was the SA. That comparison is the identity gap, not
+drift.)
 
 Note that **both controls moved too**, and still scored 1.00 because their
 `must_have` was found either way. A control that stays flat does not prove the
@@ -178,7 +182,9 @@ Corpus `861648cc513c3862`, questions `23d7d17fad7ce484`, code `6927987`.
 
 ## Related
 
-- [full-01](full-run-results.md) — the original index-warming confound, which
-  this is a variant of.
+- [Search depends on identity](search-depends-on-identity.md) — the cause of the
+  discrepancy, and the preflight guard.
+- [full-01](full-run-results.md) — the same identity gap, first misread there as
+  index warming.
 - [Why the tier response is flat](enrichment-dependent-questions.md) — the design
   of this question set.

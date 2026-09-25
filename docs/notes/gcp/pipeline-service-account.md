@@ -78,6 +78,12 @@ So `lookupContext` is not silently empty for this principal, and the
 the main risk this task existed to retire. (The tier-2 flatness is a separate,
 unrelated problem — see [[corpus-provisioning]].)
 
+**This covers `lookupContext`, not search.** Semantic `search_entries` does
+return different tables to this SA than to ADC, even with identical grants. It
+depends on the age of the principal, not its roles. Until 2026-09-25,
+`--impersonate` never reached the search, so this check could not see it. See
+[Search depends on identity](../search-depends-on-identity.md).
+
 ## The 16 checked permissions
 
 `validate-config` calls `testIamPermissions` for these, grouped by purpose so a

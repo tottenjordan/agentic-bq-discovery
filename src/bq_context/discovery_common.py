@@ -12,7 +12,7 @@ Knowledge Catalog is the product formerly called Dataplex Universal Catalog
 """
 
 import asyncio
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from google.adk.agents.callback_context import CallbackContext
 from google.cloud import dataplex_v1
@@ -21,6 +21,9 @@ from google.genai import types
 from bq_context.reranker.util_rerank import acall_reranker, format_reranker_markdown
 from bq_context.runtime import current_tier, get_datasets, is_table_in_scope
 from bq_context.schemas import RerankerResponse
+
+if TYPE_CHECKING:
+    from google.auth.credentials import Credentials
 
 SEARCH_PAGE_SIZE = 20
 
@@ -46,7 +49,9 @@ def get_question(callback_context: CallbackContext) -> str | None:
     return user_content.parts[0].text or None
 
 
-def search_entries_scoped(question: str) -> tuple[list[SearchHit], dict]:
+def search_entries_scoped(
+    question: str, credentials: "Credentials | None" = None
+) -> tuple[list[SearchHit], dict]:
     """Run scoped Knowledge Catalog semantic search; return in-scope hits + stats.
 
     Shared by the three search-based approaches (kc_search, semantic_context,
@@ -60,6 +65,13 @@ def search_entries_scoped(question: str) -> tuple[list[SearchHit], dict]:
     out-of-scope tables (verified live against the catalog). Scope is a single tier
     dataset, so parent: takes exactly one value.
 
+    **Results depend on who asks**, and not only through permissions. A principal
+    created after the catalog was indexed sees a degraded *semantic* index even
+    with identical roles -- verified with a fresh SA granted Owner, which still
+    matched the pipeline SA and not the older Owner accounts. ``credentials`` lets
+    preflight search as the pipeline SA; the approaches pass nothing and get ADC,
+    which inside a pipeline task already is the SA.
+
     Returns:
         (hits, stats). ``hits`` preserve search's own relevance order. ``stats``
         records raw vs. in-scope counts; with the corrected query the parent:
@@ -68,7 +80,7 @@ def search_entries_scoped(question: str) -> tuple[list[SearchHit], dict]:
         ``is_table_in_scope`` filter stays as harmless defense-in-depth.
     """
     project = current_tier().config.project
-    client = dataplex_v1.CatalogServiceClient()
+    client = dataplex_v1.CatalogServiceClient(credentials=credentials)
     ds = get_datasets()[0]
     query = f"{question} system=BIGQUERY parent:datasets/{ds}"
     request = dataplex_v1.SearchEntriesRequest(

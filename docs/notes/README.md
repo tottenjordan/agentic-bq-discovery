@@ -20,8 +20,8 @@ notes.
 ### The experiment
 
 - [full-01 — the first complete 3,000-cell run](full-run-results.md) — the approach comparison is
-  sound and reproduces upstream's reranker finding; the **tier comparison is invalid**, because
-  Dataplex search-index warm-up was confounded with shard execution order.
+  sound and reproduces upstream's reranker finding. The tier comparison was blamed on index
+  warm-up; the real cause was **caller identity** (corrected 2026-09-25).
 
 - [The hard corpus](hard-corpus-results.md) — the opt-in 24-table variant made the **approach**
   comparison discriminate (kc_context loses 6.3 points to its own reranker) while the **tier**
@@ -29,8 +29,13 @@ notes.
 
 - [enrich-probe-01/02](enrichment-probe-results.md) — a large tier effect, **reproducible**:
   two sweeps 9.5h apart give byte-identical search results, so it is not index warm-up.
-  Search-based approaches go 0.292 -> 0.875; context-reading ones stay at ceiling. Unresolved:
-  the same shard run locally measures tier 0 at 0.625, not 0.292.
+  Search-based approaches go 0.292 -> 0.875; context-reading ones stay at ceiling. The local
+  0.625 baseline is the developer's view of search, not the SA's.
+
+- [Search depends on identity](search-depends-on-identity.md) — semantic search returns
+  **different tables to different principals**: new ones (the pipeline SA) see a degraded
+  index regardless of grants, even Owner. Local re-runs cannot check pipeline numbers; re-indexing
+  does not heal it; `preflight --impersonate` now warns.
 
 - [Why the tier response is flat](enrichment-dependent-questions.md) — tier 0 has no headroom
   (0.94-1.00 recall), and the corpus descriptions already pre-empt the glossary. The
@@ -53,7 +58,7 @@ notes.
   scoping; the three different locations catalog resources must live in; quotas.
 - [The pipeline service account](gcp/pipeline-service-account.md) — the grant set, why
   `--impersonate` is the only meaningful way to check it, confirmation that the SA reads
-  catalog context identically to a near-Owner account, and why the Secret Manager permission
+  catalog context identically to a near-Owner account (search does *not*), and why the Secret Manager permission
   is checked against the **secret**, not the project.
 - [What `lookupContext` actually returns](gcp/lookup-context-capsule.md) — glossary definitions
   arrive **per-column under `terms`**; the default capsule truncates schemas to 25 columns;

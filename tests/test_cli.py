@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import typer
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from bq_context import cli
 from bq_context.cli import (
@@ -635,7 +635,7 @@ def _stub_preflight_dependencies(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     calls: list[int] = []
     seen: dict[tuple[int, str], int] = {}
 
-    def _live(_config: object) -> Callable[[int, str], list]:
+    def _live(_config: object, _credentials: object = None) -> Callable[[int, str], list]:
         def _search(tier: int, question: str) -> list:
             key = (tier, question)
             seen[key] = seen.get(key, 0) + 1
@@ -1050,7 +1050,7 @@ def test_preflight_probes_the_question_set_it_was_given(
     _stub_preflight_dependencies(monkeypatch)
     asked: set[str] = set()
 
-    def _live(_config: object) -> Callable[[int, str], list]:
+    def _live(_config: object, _credentials: object = None) -> Callable[[int, str], list]:
         def _search(_tier: int, question: str) -> list:
             asked.add(question)
             return []
@@ -1152,3 +1152,68 @@ def test_a_gs_uri_survives_the_command_line(
     assert result.exit_code == 0, result.output
     assert "q1" in result.output
     assert seen == ["gs://bucket/experiments/e"], f"the scheme was mangled: {seen}"
+
+
+_SA = "bq-context-pipeline@test-project.iam.gserviceaccount.com"
+
+
+# ---------------------------------------------------------------------------
+# Preflight searches as the SA it claims to check as
+#
+# `--impersonate` once reached the table cache and not the search, so the check
+# that could have caught search answering the SA differently searched as the
+# developer. See tests/test_search_identity.py for the comparison itself.
+# ---------------------------------------------------------------------------
+def _stub_search_by_identity(
+    monkeypatch: pytest.MonkeyPatch, sa_credentials: object
+) -> list[object]:
+    """A catalog that answers the SA differently from ADC, as the real one did.
+
+    Returns the log of which identity each bound search ran as.
+    """
+    _stub_preflight_dependencies(monkeypatch)
+    monkeypatch.setattr(cli, "_credentials", lambda name: sa_credentials if name else None)
+    bound: list[object] = []
+
+    def _live(_config: object, credentials: object = None) -> Callable[[int, str], list]:
+        bound.append(credentials)
+        table = "p.d.air_quality_annual_summary" if credentials else "p.d.hurricanes"
+        return lambda _tier, _question: [_Hit(table)]
+
+    monkeypatch.setattr(cli, "_live_search", _live)
+    return bound
+
+
+def _preflight_as(*extra: str) -> Result:
+    return runner.invoke(
+        app, ["preflight", "--tier", "1", "--baseline", "0", "--settle", "0", *extra]
+    )
+
+
+def test_impersonated_preflight_searches_as_the_sa_and_reports_the_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Covers the wiring. Deleting either the credentials argument or the
+    identity comparison from preflight leaves the unit tests above green."""
+    sa_credentials = object()
+    bound = _stub_search_by_identity(monkeypatch, sa_credentials)
+
+    result = _preflight_as("--impersonate", _SA)
+
+    assert sa_credentials in bound, "preflight never searched as the SA"
+    assert None in bound, "preflight never searched as the caller to compare"
+    assert "different tables" in result.output
+    assert _SA in result.output
+
+
+def test_without_impersonation_there_is_nothing_to_compare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside a pipeline task ADC already is the SA; a second probe as the same
+    identity would only double the cost of preflight."""
+    bound = _stub_search_by_identity(monkeypatch, object())
+
+    result = _preflight_as()
+
+    assert bound == [None]
+    assert "different tables" not in result.output

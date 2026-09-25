@@ -30,7 +30,22 @@ reranked approach. This reproduces upstream's central finding, more sharply.
 **`kc_context` is the token outlier** at 43k per cell — it ships the entire
 corpus capsule to the reranker.
 
-## The confound: Dataplex search index warm-up
+## The confound: caller identity, first misread as index warm-up
+
+> **Correction, 2026-09-25.** The diagnosis below is wrong about the cause.
+> The "re-run later" was a local `run-shard` as the developer (ADC), not a
+> pipeline re-run, so it compared two *principals*, not two moments. Semantic
+> search returns different tables to `bq-context-pipeline` than to the
+> developer. Asked again today, the SA sees tier 0 at 0.620, tier 1 at 0.893,
+> tier 2 at 0.967, and tier 3 at 0.920. That matches this run's tiers 2–3
+> exactly and its tiers 0–1 closely, so the index was not converging. The run's
+> tier response is roughly **what the SA sees**, and the flat 0.967 is **what
+> the developer sees**. Neither is an artifact of time. See
+> [Search depends on identity](search-depends-on-identity.md).
+>
+> The approach-major plan order below is still worth keeping, because it costs
+> nothing and closes a real hazard. It just was not what went wrong here.
+
 
 The run reported a large enrichment effect on the three search-based approaches:
 
@@ -70,7 +85,7 @@ discovery at every tier.
 | Reranker value (precision, nDCG) | ✅ valid |
 | Latency and token cost per approach | ✅ valid |
 | `bq_tools` / `kc_context` / `context_prefilter` at all tiers | ✅ valid, no retrieval step |
-| **Tier response for the three search approaches** | ❌ **invalid** |
+| **Tier response for the three search approaches** | ⚠️ valid only as the pipeline SA's view — see the correction above |
 
 ### A second, independent fingerprint
 

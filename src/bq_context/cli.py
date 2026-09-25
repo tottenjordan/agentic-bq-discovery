@@ -350,8 +350,15 @@ def _probe_summary(labels: Mapping[str, tuple[str, ...]], tiers: Sequence[int]) 
     return "search found/tier  " + "  ".join(parts)
 
 
-def _live_search(config: ExperimentConfig) -> Callable[[int, str], Sequence[Any]]:
-    """Bind a tier-scoped semantic search against the live catalog."""
+def _live_search(
+    config: ExperimentConfig, credentials: Credentials | None = None
+) -> Callable[[int, str], Sequence[Any]]:
+    """Bind a tier-scoped semantic search against the live catalog, as ``credentials``.
+
+    ``None`` is ADC. Preflight passes the impersonated SA's credentials; before it
+    did, ``--impersonate`` reached the table cache and not the search, so a check
+    that claimed to search "as the pipeline SA" searched as the developer.
+    """
     from bq_context.context_cache import TableCache  # noqa: PLC0415
     from bq_context.discovery_common import search_entries_scoped  # noqa: PLC0415
     from bq_context.runtime import TierContext, tier_scope  # noqa: PLC0415
@@ -359,10 +366,52 @@ def _live_search(config: ExperimentConfig) -> Callable[[int, str], Sequence[Any]
     def _search(tier: int, question: str) -> Sequence[Any]:
         ctx = TierContext.build(config, tier, TableCache.empty())
         with tier_scope(ctx):
-            hits, _ = search_entries_scoped(question)
+            hits, _ = search_entries_scoped(question, credentials)
         return hits
 
     return _search
+
+
+#: How many moved (tier, question) pairs a warning names before summarising.
+_NAMED_PAIRS = 8
+
+
+def assess_search_identity(
+    caller: Mapping[str, tuple[str, ...]],
+    target: Mapping[str, tuple[str, ...]],
+    target_name: str,
+) -> list[str]:
+    """Warn when semantic search answers the pipeline SA differently from you.
+
+    Exists because it happened, and cost two misdiagnoses. Dataplex semantic
+    search returned different tables to ``bq-context-pipeline`` than to the
+    developer, for the same query at the same moment -- tier-0 recall 0.292
+    versus 0.625 on the enrichment set, 0.620 versus 0.967 on the shipped one.
+    Not a permissions gap: a *fresh* SA with the same roles, even with Owner,
+    matched the pipeline SA, while older Owner accounts matched the developer.
+
+    Every sweep measures what the pipeline SA sees, and every local re-check
+    measures what you see. When they disagree, a local re-run cannot confirm or
+    refute a pipeline number, which is how `full-01`'s tier effect came to be
+    blamed on index warming.
+
+    Keys present in only one probe are ignored, as in `assess_search_convergence`.
+    """
+    moved = sorted(k for k in caller.keys() & target.keys() if caller[k] != target[k])
+    if not moved:
+        return []
+    shown = ", ".join(moved[:_NAMED_PAIRS])
+    if len(moved) > _NAMED_PAIRS:
+        shown += f" (+{len(moved) - _NAMED_PAIRS} more)"
+    return [
+        (
+            f"semantic search returns different tables to {target_name} than to you "
+            f"for {len(moved)} of {len(caller.keys() & target.keys())} (tier, question) "
+            f"pairs: {shown}. The pipeline measures what {target_name} sees, so a local "
+            "re-run will not reproduce its numbers. See "
+            "docs/notes/search-depends-on-identity.md."
+        )
+    ]
 
 
 def assess_search_convergence(
@@ -1146,6 +1195,43 @@ def cleanup(
     corpus_cleanup.main()
 
 
+def _search_warnings(
+    config: ExperimentConfig,
+    tiers: Sequence[int],
+    questions: Mapping[str, Mapping[str, Any]],
+    settle: int,
+    *,
+    credentials: Credentials | None,
+    impersonate: str,
+) -> list[str]:
+    """Probe live search with the real questions; warn on drift or on identity.
+
+    The questions are whatever the submitter chose, not the shipped set -- a
+    user-supplied set is exactly the cold one.
+    """
+    warnings: list[str] = []
+    search = _live_search(config, credentials)
+    probe = _probe_search_labels(questions, tiers, search)
+    typer.echo(_probe_summary(probe, tiers))
+    # Twice, separated in time. One observation cannot distinguish a moving
+    # index from enrichment doing its job — see assess_search_convergence.
+    if settle:
+        import time  # noqa: PLC0415
+
+        typer.echo(f"re-probing in {settle}s to check the index is not still moving")
+        time.sleep(settle)
+        again = _probe_search_labels(questions, tiers, search)
+        typer.echo(_probe_summary(again, tiers) + "  (second pass)")
+        warnings.extend(assess_search_convergence(probe, again))
+    # The same questions as yourself. Only meaningful when impersonating:
+    # inside a pipeline task there is no second identity to compare with.
+    if credentials is not None:
+        mine = _probe_search_labels(questions, tiers, _live_search(config))
+        typer.echo(_probe_summary(mine, tiers) + "  (as you)")
+        warnings.extend(assess_search_identity(mine, probe, impersonate))
+    return warnings
+
+
 @app.command()
 def preflight(
     tier: TierOpt = 3,
@@ -1241,22 +1327,16 @@ def preflight(
     problems.extend(_assess_question_set(questions_file))
 
     if len(caches) > 1:
-        search = _live_search(config)
-        # Whatever the submitter chose, not the shipped set -- which is the whole
-        # point, since a user-supplied set is exactly the cold one.
-        questions = _load_questions(questions_file)
-        probe = _probe_search_labels(questions, sorted(caches), search)
-        typer.echo(_probe_summary(probe, sorted(caches)))
-        # Twice, separated in time. One observation cannot distinguish a moving
-        # index from enrichment doing its job — see assess_search_convergence.
-        if settle:
-            import time  # noqa: PLC0415
-
-            typer.echo(f"re-probing in {settle}s to check the index is not still moving")
-            time.sleep(settle)
-            again = _probe_search_labels(questions, sorted(caches), search)
-            typer.echo(_probe_summary(again, sorted(caches)) + "  (second pass)")
-            warnings.extend(assess_search_convergence(probe, again))
+        warnings.extend(
+            _search_warnings(
+                config,
+                sorted(caches),
+                _load_questions(questions_file),
+                settle,
+                credentials=credentials,
+                impersonate=impersonate,
+            )
+        )
 
     for warning in warnings:
         typer.secho(f"WARN  {warning}", fg=typer.colors.YELLOW, err=True)

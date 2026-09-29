@@ -202,3 +202,39 @@ The two options are to run the pipeline as a principal with the complete view,
 or to accept the SA's view and label results with it. Either way, compare only
 numbers measured by the same principal, and run the guard above before quoting a
 tier effect.
+
+**Decided 2026-09-29: this project measures as the default compute SA**
+(`934903580331-compute@developer.gserviceaccount.com`). Five days of the daily
+job showed the pipeline SA's view had stopped converging:
+
+| date (UTC) | differing pairs, enrichment set |
+|---|---|
+| 09-25 | 6 of 48 |
+| 09-26 – 09-28 | 6 of 48, the same six tier-0 pairs each day |
+| 09-29 | 7 of 48, the same six plus `tier2/cat-checkout` |
+
+The compute SA's view matches the developer's. It ran a smoke pipeline end to
+end on 2026-09-25 (see [Every result says who measured
+it](#every-result-says-who-measured-it)), so **a local ADC run reproduces a
+pipeline number again.**
+
+How it is set: `BQ_CONTEXT_SERVICE_ACCOUNT` in this project's `.env`. That is
+local config, not a code default. The framework still defaults to the
+least-privilege `bq-context-pipeline`, for the reason given in
+[the pipeline service account](gcp/pipeline-service-account.md). A fresh
+checkout without the `.env` line would measure as the pipeline SA again. The
+`principal` column and `merge`'s mixed-principal warning are what catch that.
+
+What it costs:
+
+- **Privilege.** The compute SA holds `roles/owner` here, among others. A
+  pipeline task can do anything in the project. That is acceptable in this
+  sandbox and would not be acceptable elsewhere.
+- **Comparability with earlier results.** `full-01`, `hard-full-01`,
+  `hard-pilot-01`, `hard-survey-01` and `enrich-probe-01/02` were all measured
+  by the pipeline SA. Compare new results with them only on tiers and questions
+  where the two views agree. Tier 2 was the closest match. Tier 0 differs the
+  most.
+
+For another project: check the gap with `preflight --impersonate` before
+choosing. If a least-privilege SA already sees the complete view there, keep it.

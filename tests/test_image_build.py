@@ -173,8 +173,26 @@ def test_submit_pipeline_builds_before_it_compiles(
         "bq_context.pipeline.compilation.compile_pipeline",
         lambda dest: (order.append("compile"), dest)[1],
     )
-    CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
+    # A real submit with Vertex stubbed out: a dry run no longer builds at all.
+    monkeypatch.setattr(
+        "bq_context.pipeline.submit.submit_pipeline",
+        lambda **_: type("Job", (), {"resource_name": "jobs/1"})(),
+    )
+    CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t"])
     assert order[:2] == ["build", "compile"], order
+
+
+def test_a_dry_run_builds_no_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dry run at a commit with no image used to start a Cloud Build and push
+    the result -- a paid, outward-facing side effect of a flag that promises none."""
+    from typer.testing import CliRunner
+
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: LocalStore(tmp_path))
+    called: list[bool] = []
+    monkeypatch.setattr(cli, "ensure_image", lambda *_: called.append(True))
+    result = CliRunner().invoke(cli.app, ["submit-pipeline", "-e", "t", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert not called
 
 
 def test_a_pinned_image_skips_the_build(monkeypatch: pytest.MonkeyPatch) -> None:

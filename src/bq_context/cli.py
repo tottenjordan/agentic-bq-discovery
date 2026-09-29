@@ -586,7 +586,9 @@ def _require_expected_questions(
     raise typer.Exit(1)
 
 
-def _snapshot_questions(out: str, experiment_id: str, source: str | Path) -> str:
+def _snapshot_questions(
+    out: str, experiment_id: str, source: str | Path, *, write: bool = True
+) -> str:
     """Copy the question set into the experiment prefix and return its fingerprint.
 
     The copy is the point. Shards read the snapshot rather than the submitter's
@@ -598,16 +600,22 @@ def _snapshot_questions(out: str, experiment_id: str, source: str | Path) -> str
     diagnostics; this is an input every shard depends on, so failing to write it
     must stop the submission rather than produce 24 shards that cannot find
     their questions.
+
+    ``write=False`` is the dry run: fingerprint and report, touch nothing. No
+    store is built either, since a GCS store opens a client on construction.
     """
     from bq_context.runner.planner import questions_fingerprint  # noqa: PLC0415
     from bq_context.runner.resume import experiment_prefix  # noqa: PLC0415
 
     questions = _load_questions(source)
     fingerprint = questions_fingerprint(questions)
-    store = store_for(out)
     target = f"{experiment_prefix(experiment_id)}/questions.json"
-    store.write_text(target, json.dumps({"questions": list(questions.values())}, indent=2) + "\n")
     typer.echo(f"questions {len(questions)} from {source}  fingerprint={fingerprint}")
+    if not write:
+        typer.echo(f"snapshot  {out.rstrip('/')}/{target} (dry run: not written)")
+        return fingerprint
+    store = store_for(out)
+    store.write_text(target, json.dumps({"questions": list(questions.values())}, indent=2) + "\n")
     typer.echo(f"snapshot  {store.uri(target)}")
     return fingerprint
 
@@ -1914,7 +1922,11 @@ def submit_pipeline_cmd(
     questions_file: QuestionsOpt = DEFAULT_QUESTIONS,
     skip_infra: Annotated[bool, typer.Option("--skip-infra")] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Compile and print, do not submit.")
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Compile and print. Builds no image, writes nothing, submits nothing.",
+        ),
     ] = False,
     no_cache: Annotated[
         bool,
@@ -1968,7 +1980,12 @@ def submit_pipeline_cmd(
     # Before compiling: Vertex rejects job creation outright when a statically
     # referenced image is absent, so this has to happen here rather than as a
     # pipeline step.
-    if not image:
+    #
+    # Not on a dry run. It used to run here regardless, so a dry run at a commit
+    # with no image started a Cloud Build and pushed the result.
+    if not image and dry_run:
+        typer.echo(f"image     {os.environ['BQ_CONTEXT_IMAGE']} (dry run: not checked or built)")
+    elif not image:
         ensure_image(os.environ["BQ_CONTEXT_IMAGE"], sha)
 
     # Minted here, once, and sent as a parameter. Generated inside the pipeline
@@ -1977,7 +1994,7 @@ def submit_pipeline_cmd(
     from bq_context.runner.resume import new_run_id  # noqa: PLC0415
 
     run_id = new_run_id(sha)
-    questions_fp = _snapshot_questions(out, experiment_id, questions_file)
+    questions_fp = _snapshot_questions(out, experiment_id, questions_file, write=not dry_run)
 
     params = {
         "project": config.project,

@@ -7,6 +7,12 @@ on a `PipelineJob` silently falls back to it, and in a long-lived sandbox that
 account often carries Editor — so the pipeline works here and breaks in any
 project that enforces least privilege.
 
+> **This project no longer measures with it (2026-09-29).** Semantic search
+> gives this SA a degraded view, so `hybrid-vertex` sets
+> `BQ_CONTEXT_SERVICE_ACCOUNT` to the compute SA in `.env`. It stays the
+> framework's default. See
+> [search-depends-on-identity](../search-depends-on-identity.md#choosing-whose-view-to-measure).
+
 ## Grants
 
 Project-level on `hybrid-vertex`:

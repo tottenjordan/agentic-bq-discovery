@@ -60,7 +60,9 @@ Each of these cost real time here. All verified against the current tree.
 - **Semantic search answers each principal differently.** The pipeline SA sees a
   degraded index that the developer does not, so a local re-run will not reproduce
   a pipeline number. Compare only numbers measured by the same principal, and run
-  `preflight --impersonate <sa>`, which warns on the gap. See
+  `preflight --impersonate <sa>`, which warns on the gap. This project therefore
+  measures as the default compute SA, set with `BQ_CONTEXT_SERVICE_ACCOUNT` in
+  `.env`; the code default is unchanged. See
   [docs/notes/search-depends-on-identity.md](./docs/notes/search-depends-on-identity.md).
 - **`corpus/setup.py` is vendored from upstream** (see `NOTICE`) and kept
   re-syncable — the diff is ~58 lines, nearly all formatting. Put new code

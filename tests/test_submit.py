@@ -262,6 +262,24 @@ def test_the_submission_carries_a_question_fingerprint(monkeypatch: pytest.Monke
     assert _capture_parameters(monkeypatch, argv)["questions_fingerprint"]
 
 
+def test_a_dry_run_writes_no_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dry run left `experiments/{id}/questions.json` in the bucket, so every
+    trial of a command created an experiment folder. It must still fingerprint,
+    since that is part of what a dry run is for checking."""
+    from typer.testing import CliRunner
+
+    from bq_context import cli
+    from bq_context.runner.store import LocalStore
+
+    monkeypatch.setattr(cli, "store_for", lambda *_a, **_k: LocalStore(tmp_path))
+    argv = ["submit-pipeline", "-e", "byoq", "--image", "img:test", "--dry-run"]
+    result = CliRunner().invoke(cli.app, argv)
+    assert result.exit_code == 0, result.output
+    assert not list(tmp_path.rglob("*")), "a dry run wrote to the store"
+    assert "fingerprint=" in result.output
+    assert "not written" in result.output
+
+
 def test_the_snapshot_lands_in_the_experiment_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

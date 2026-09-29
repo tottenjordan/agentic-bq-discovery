@@ -54,11 +54,13 @@ deploy() {
     --member "serviceAccount:${WATCH_SA}" --role roles/iam.serviceAccountTokenCreator \
     --condition None --quiet >/dev/null
 
+  # One retry: a transient Dataplex 500 on 2026-09-29 otherwise cost the day's
+  # data point. A retried day shows up as two sets of lines in `logs`.
   gcloud run jobs deploy "$JOB" --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" --service-account "$WATCH_SA" \
     --command bq-context --args "$JOB_ARGS" \
     --set-env-vars "$(env_vars)" \
-    --max-retries 0 --task-timeout 15m --quiet
+    --max-retries 1 --task-timeout 15m --quiet
 
   gcloud run jobs add-iam-policy-binding "$JOB" --project "$PROJECT" --region "$REGION" \
     --member "serviceAccount:${WATCH_SA}" --role roles/run.invoker --quiet >/dev/null

@@ -66,6 +66,12 @@ def test_the_log_query_matches_what_preflight_prints() -> None:
     assert not missing, f"the log query looks for text preflight never prints: {missing}"
 
 
+def test_the_job_survives_one_transient_failure() -> None:
+    """With no retry, a single Dataplex 500 loses the day's data point."""
+    (retries,) = re.findall(r"--max-retries (\d+)", TEXT)
+    assert int(retries) >= 1
+
+
 def test_the_job_gets_the_config_the_pipeline_forwards() -> None:
     (keys,) = re.findall(r"for key in ([A-Z_ ]+); do", TEXT)
     assert set(keys.split()) == set(CONFIG_ENV_KEYS)
